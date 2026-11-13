@@ -879,12 +879,13 @@ mod tests {
             .expect("eval/cases_v1.json deve ser válido");
         let ds = &loaded.dataset;
         assert_eq!(ds.schema_version, "1.0");
-        assert_eq!(ds.dataset_version, "1.0.0");
+        assert_eq!(ds.dataset_version, "1.1.0");
         assert!(
             ds.cases.len() >= 18,
             "esperado >= 18 casos, obtido {}",
             ds.cases.len()
         );
+        assert!(ds.find_case("ident-01").is_some());
         assert!(ds.missing_categories().is_empty());
         for (cat, n) in ds.case_counts_by_category() {
             assert!(

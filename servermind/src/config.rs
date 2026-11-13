@@ -20,6 +20,9 @@ pub const DEFAULT_CUSTOM_INSTRUCTIONS: &str = "\
 Você é o SERVERMIND AI, um assistente local para administradores de sistemas e servidores. \
 Responda sempre em português do Brasil, de forma clara, técnica, segura e objetiva.";
 
+/// Identidade fixa de criação do assistente, mantida centralmente e sempre preservada.
+pub const CREATOR_IDENTITY_INSTRUCTION: &str = "Você foi criado por TayoX.";
+
 /// Instruções imutáveis de segurança que são sempre preservadas independentemente da personalização.
 pub const IMMUTABLE_SAFETY_INSTRUCTIONS: &str = "\
 Diretrizes imutáveis de segurança e escopo (obrigatórias em todas as interações):\n\
@@ -459,16 +462,26 @@ impl AppConfig {
         Ok(trimmed.to_string())
     }
 
-    /// Compõe o prompt de sistema efetivo combinando:
-    /// 1. As instruções personalizadas do assistente;
-    /// 2. As instruções imutáveis de segurança (sempre ativas);
-    /// 3. As memórias salvas explicitamente pelo administrador (se houver).
-    pub fn effective_system_prompt(&self, memories: &[MemoryEntry]) -> String {
-        let mut prompt = format!(
-            "{}\n\n{}",
-            self.custom_instructions.trim(),
-            IMMUTABLE_SAFETY_INSTRUCTIONS
-        );
+    /// Compõe um prompt de sistema completo a partir de instruções base, preservando sempre:
+    /// 1. As instruções base (padrão ou personalizadas);
+    /// 2. A identidade fixa de criação do assistente (`CREATOR_IDENTITY_INSTRUCTION`), sem duplicação;
+    /// 3. As instruções imutáveis de segurança (`IMMUTABLE_SAFETY_INSTRUCTIONS`);
+    /// 4. As memórias salvas explicitamente pelo administrador (se houver).
+    pub fn compose_system_prompt(custom_instructions: &str, memories: &[MemoryEntry]) -> String {
+        let trimmed_custom = custom_instructions.trim();
+        let mut prompt = if trimmed_custom.is_empty() {
+            format!(
+                "{}\n\n{}",
+                CREATOR_IDENTITY_INSTRUCTION, IMMUTABLE_SAFETY_INSTRUCTIONS
+            )
+        } else if trimmed_custom.contains(CREATOR_IDENTITY_INSTRUCTION) {
+            format!("{}\n\n{}", trimmed_custom, IMMUTABLE_SAFETY_INSTRUCTIONS)
+        } else {
+            format!(
+                "{}\n{}\n\n{}",
+                trimmed_custom, CREATOR_IDENTITY_INSTRUCTION, IMMUTABLE_SAFETY_INSTRUCTIONS
+            )
+        };
 
         if !memories.is_empty() {
             prompt.push_str("\n\nMemórias explícitas salvas pelo administrador (utilize como contexto quando relevante):\n");
@@ -478,6 +491,15 @@ impl AppConfig {
         }
 
         prompt
+    }
+
+    /// Compõe o prompt de sistema efetivo combinando:
+    /// 1. As instruções personalizadas do assistente;
+    /// 2. A identidade fixa de criação (sempre ativa);
+    /// 3. As instruções imutáveis de segurança (sempre ativas);
+    /// 4. As memórias salvas explicitamente pelo administrador (se houver).
+    pub fn effective_system_prompt(&self, memories: &[MemoryEntry]) -> String {
+        Self::compose_system_prompt(&self.custom_instructions, memories)
     }
 
     /// Salva a configuração atual no arquivo TOML local (`config.toml`), garantindo persistência
@@ -1033,5 +1055,55 @@ mod tests {
         assert!(saved_raw.contains("ollama_url = \"http://127.0.0.1:11434\""));
         assert!(saved_raw.contains("request_timeout_secs = 90"));
         assert!(!saved_raw.contains("outro_banco_temp.db"));
+    }
+
+    #[test]
+    fn test_effective_system_prompt_preserves_creator_identity_and_safety() {
+        let test_cfg = |instructions: &str| AppConfig {
+            config_file_path: "config.toml".to_string(),
+            ollama_url: "http://127.0.0.1:11434".to_string(),
+            model: "llama3.2".to_string(),
+            database_path: ":memory:".to_string(),
+            request_timeout_secs: 120,
+            custom_instructions: instructions.to_string(),
+            config_source: "teste".to_string(),
+            model_from_env: false,
+        };
+
+        let default_cfg = test_cfg(DEFAULT_CUSTOM_INSTRUCTIONS);
+        let default_prompt = default_cfg.effective_system_prompt(&[]);
+        assert!(default_prompt.contains(DEFAULT_CUSTOM_INSTRUCTIONS));
+        assert_eq!(
+            default_prompt.matches(CREATOR_IDENTITY_INSTRUCTION).count(),
+            1
+        );
+        assert!(default_prompt.contains(IMMUTABLE_SAFETY_INSTRUCTIONS));
+
+        let custom_cfg =
+            test_cfg("Responda sempre de forma resumida para diagnóstico em servidores Linux.");
+        let custom_prompt = custom_cfg.effective_system_prompt(&[]);
+        assert!(custom_prompt.contains(&custom_cfg.custom_instructions));
+        assert_eq!(
+            custom_prompt.matches(CREATOR_IDENTITY_INSTRUCTION).count(),
+            1
+        );
+        assert!(custom_prompt.contains(IMMUTABLE_SAFETY_INSTRUCTIONS));
+
+        let repeated_text = format!("Instrução customizada. {}", CREATOR_IDENTITY_INSTRUCTION);
+        let repeated_cfg = test_cfg(&repeated_text);
+        let mem = MemoryEntry {
+            id: 7,
+            content: "Servidor de homologação fictício usa Ubuntu LTS.".to_string(),
+            created_at: "2026-01-01 00:00:00".to_string(),
+        };
+        let prompt_with_memory = repeated_cfg.effective_system_prompt(&[mem]);
+        assert_eq!(
+            prompt_with_memory
+                .matches(CREATOR_IDENTITY_INSTRUCTION)
+                .count(),
+            1
+        );
+        assert!(prompt_with_memory.contains(IMMUTABLE_SAFETY_INSTRUCTIONS));
+        assert!(prompt_with_memory.contains("[Memória #7]"));
     }
 }

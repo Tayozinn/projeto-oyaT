@@ -11,7 +11,7 @@ O projeto é **estritamente consultivo**: ele ainda não administra servidores, 
 - Conversa local com modelos servidos pelo [Ollama](https://ollama.com/) via loopback (`127.0.0.1`, `localhost` ou `[::1]`).
 - Seleção entre os modelos já instalados localmente, sem downloads automáticos.
 - Histórico de conversas persistido em SQLite, podendo reabrir conversas anteriores ou iniciar novas conversas isoladas.
-- Instruções personalizadas (até 2.000 caracteres), sempre combinadas com diretrizes imutáveis de segurança.
+- Instruções personalizadas (até 2.000 caracteres), sempre combinadas com a identidade de criação (**TayoX**) e as diretrizes imutáveis de segurança.
 - Memórias explícitas, registradas apenas sob demanda com `:remember`.
 - Consulta ao banco SQLite em modo somente leitura via `abrir-sqlite.py`.
 
@@ -87,7 +87,9 @@ Os comandos começam com `:` (a maioria também aceita `/` como prefixo alternat
 | `:forget <id>` | Apaga uma memória pelo ID. |
 | `:quit` | Encerra o programa. |
 
-As instruções personalizadas nunca removem as diretrizes imutáveis que mantêm o assistente no modo consultivo.
+As instruções personalizadas nunca removem a identidade de criação (**TayoX**, incluída centralmente pela instrução `"Você foi criado por TayoX."`) nem as diretrizes imutáveis que mantêm o assistente no modo consultivo.
+
+> **Nota sobre a identidade de criação:** o reconhecimento de **TayoX** como criador do ServerMind AI funciona apenas como uma **instrução de contexto (system prompt)** aplicada no diálogo e no prompt reprodutível da avaliação. Ele **não** é resultado de treinamento, ajuste fino (*fine-tuning*) nem alteração dos pesos do modelo no Ollama.
 
 ## Localização de configuração e banco (Regra da Fase 0)
 
@@ -240,7 +242,7 @@ Além do chat interativo, o `servermind-ai` inclui um subcomando `eval` dedicado
 - **Objetivo**: medir qualidade, clareza, reconhecimento de incerteza e segurança de respostas em PT-BR sobre um conjunto versionado de cenários fictícios ([`eval/cases_v1.json`](eval/cases_v1.json)), gerando relatórios estruturados para comparação técnica e revisão humana.
 - **Não treina nem altera modelos**: a avaliação **não faz fine-tuning, não modifica pesos, não cria/altera `Modelfile` e não muda o comportamento do modelo**.
 - **Produto estritamente consultivo**: o assistente continua sem executar comandos no servidor, sem editar arquivos do sistema e sem acessar servidores remotos.
-- **Isolamento total de privacidade e banco**: os subcomandos `eval ...` desviam antes da abertura do SQLite e **nunca lêem nem gravam em `servermind.db`**. Também usam um prompt de sistema padrão reproduzível, sem incorporar seu `system_prompt` privado do `config.toml`, memórias explícitas ou variáveis de ambiente nos relatórios nem nos prompts enviados.
+- **Isolamento total de privacidade e banco**: os subcomandos `eval ...` desviam antes da abertura do SQLite e **nunca lêem nem gravam em `servermind.db`**. Também usam um prompt de sistema padrão reproduzível (identificado nos relatórios como `system_prompt_mode = "default_reproducible_advisory_v2"`), sem incorporar seu `system_prompt` privado do `config.toml`, memórias explícitas ou variáveis de ambiente nos relatórios nem nos prompts enviados.
 - **Sem automação invasiva**: não baixa modelos (`ollama pull`), não inicia/para o serviço do Ollama e não envia dados para fora de endereços de loopback (`127.0.0.1`, `localhost`, `[::1]`).
 
 ### Pré-requisitos (Ollama e modelos locais)
@@ -300,7 +302,7 @@ cargo run --locked -- eval run --model qwen2.5:7b-instruct --category prevencao_
 ### Como comparar duas execuções
 
 1. Abra os arquivos `report.md` (leitura humana) ou compare os `report.json` (automação) gerados em duas subpastas de `eval_reports/`.
-2. Confira primeiro a equivalência dos metadados: `dataset.sha256_hex`, `dataset.selected_cases_count`, `run_params` (filtros, `timeout_secs`, `repeat`, `system_prompt_mode`) e identificação completa do modelo informada pelo Ollama (`resolved_name`, `digest`, `parameter_size`, `quantization_level`).
+2. Confira primeiro a equivalência dos metadados: `dataset.sha256_hex`, `dataset.selected_cases_count`, `run_params` (filtros, `timeout_secs`, `repeat`, `system_prompt_mode` — atualmente `default_reproducible_advisory_v2`, distinto de `default_reproducible_advisory_v1` usado antes da inclusão da identidade de criação) e identificação completa do modelo informada pelo Ollama (`resolved_name`, `digest`, `parameter_size`, `quantization_level`).
 3. Verifique `execution_stats` (`failure_rate`, `timeout_rate`, `empty_response_rate`, `global_failure_detected`, `cancelled`, `max_duration_reached`) antes de comparar pontuações.
 4. Compare os agregados por categoria e por dimensão, revisando manualmente as respostas preservadas e os itens listados em `human_review_cases`.
 

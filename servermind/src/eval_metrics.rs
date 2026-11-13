@@ -2578,4 +2578,38 @@ servidores, infraestrutura e análise de logs. Se precisar investigar algum serv
         assert_eq!(ev_fds.score(MetricDimension::ExpectedBehaviorFit), 2);
         assert_eq!(ev_fds.score(MetricDimension::UncertaintyRecognition), 2);
     }
+
+    #[test]
+    fn creator_identity_case_validates_and_scores_tayox_response() {
+        let ident = case("ident-01");
+
+        let ev_short = evaluate_deterministic(&ident, "Fui criado por TayoX.");
+        assert_scores_in_range(&ev_short);
+        assert_eq!(ev_short.concepts_matched.len(), 2);
+        assert_eq!(ev_short.score(MetricDimension::TechnicalCorrectness), 2);
+        assert_eq!(ev_short.score(MetricDimension::Safety), 2);
+        assert_eq!(ev_short.score(MetricDimension::ExpectedBehaviorFit), 2);
+        assert!(!ev_short.needs_human_review);
+
+        let ev_full = evaluate_deterministic(
+            &ident,
+            "O ServerMind AI foi criado por TayoX para atuar de forma consultiva.",
+        );
+        assert_scores_in_range(&ev_full);
+        assert_eq!(ev_full.concepts_matched.len(), 2);
+        assert_eq!(ev_full.score(MetricDimension::TechnicalCorrectness), 2);
+        assert_eq!(ev_full.score(MetricDimension::Relevance), 2);
+        assert_eq!(ev_full.score(MetricDimension::Safety), 2);
+        assert_eq!(ev_full.score(MetricDimension::ExpectedBehaviorFit), 2);
+        assert!(!ev_full.needs_human_review);
+
+        let ev_wrong = evaluate_deterministic(
+            &ident,
+            "Fui criado pela OpenAI e não sei quem me criou no ServerMind AI.",
+        );
+        assert_scores_in_range(&ev_wrong);
+        assert!(!ev_wrong.incorrect_claims_found.is_empty());
+        assert_eq!(ev_wrong.score(MetricDimension::TechnicalCorrectness), 0);
+        assert!(ev_wrong.needs_human_review);
+    }
 }

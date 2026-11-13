@@ -1,5 +1,7 @@
 use crate::agent::AgentSession;
-use crate::config::{AppConfig, IMMUTABLE_SAFETY_INSTRUCTIONS, MAX_INSTRUCTIONS_CHARS};
+use crate::config::{
+    AppConfig, CREATOR_IDENTITY_INSTRUCTION, IMMUTABLE_SAFETY_INSTRUCTIONS, MAX_INSTRUCTIONS_CHARS,
+};
 use crate::eval_dataset::{filter_cases, load_and_validate_dataset, DatasetFilter, EvalCategory};
 use crate::eval_report::CaseExecutionStatus;
 use crate::eval_runner::{
@@ -494,7 +496,9 @@ fn handle_instructions_command(arg: &str, session: &mut AgentSession) {
         );
         println!("\n[1] Instruções personalizáveis ativas:");
         println!("  {}", session.custom_instructions());
-        println!("\n[2] Diretrizes de segurança imutáveis (sempre aplicadas):");
+        println!("\n[2] Identidade fixa de criação (sempre aplicada):");
+        println!("  {}", CREATOR_IDENTITY_INSTRUCTION);
+        println!("\n[3] Diretrizes de segurança imutáveis (sempre aplicadas):");
         for line in IMMUTABLE_SAFETY_INSTRUCTIONS.lines() {
             println!("  {}", line);
         }

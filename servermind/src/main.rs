@@ -572,8 +572,32 @@ mod tests {
             model_from_env: false,
         };
 
+        let default_cfg = AppConfig {
+            custom_instructions: DEFAULT_CUSTOM_INSTRUCTIONS.to_string(),
+            ..cfg.clone()
+        };
+        let default_effective = default_cfg.effective_system_prompt(&[]);
+        assert_eq!(
+            crate::config::CREATOR_IDENTITY_INSTRUCTION,
+            "Você foi criado por TayoX."
+        );
+        assert!(default_effective.contains(DEFAULT_CUSTOM_INSTRUCTIONS));
+        assert_eq!(
+            default_effective
+                .matches(crate::config::CREATOR_IDENTITY_INSTRUCTION)
+                .count(),
+            1
+        );
+        assert!(default_effective.contains(IMMUTABLE_SAFETY_INSTRUCTIONS));
+
         let effective = cfg.effective_system_prompt(&[]);
         assert!(effective.contains(&valid));
+        assert_eq!(
+            effective
+                .matches(crate::config::CREATOR_IDENTITY_INSTRUCTION)
+                .count(),
+            1
+        );
         assert!(effective.contains(IMMUTABLE_SAFETY_INSTRUCTIONS));
         assert!(!DEFAULT_CUSTOM_INSTRUCTIONS.is_empty());
     }
@@ -1424,8 +1448,9 @@ mod tests {
         assert!(!parsed.execution_stats.global_failure_detected);
         assert_eq!(
             parsed.run_params.system_prompt_mode,
-            "default_reproducible_advisory_v1"
+            "default_reproducible_advisory_v2"
         );
+        assert!(md_text.contains("default_reproducible_advisory_v2"));
         assert!(md_text.contains("Avaliação"));
 
         let captured_http = server.captured.lock().expect("lock captured").join("\n");

@@ -15,9 +15,7 @@
 //! - Usa sempre o prompt de sistema reprodutível padrão ([`build_reproducible_system_prompt`]),
 //!   sem expor `system_prompt` privado de `config.toml` ou variáveis de ambiente nos relatórios.
 
-use crate::config::{
-    AppConfig, DEFAULT_CUSTOM_INSTRUCTIONS, DEFAULT_TIMEOUT_SECS, IMMUTABLE_SAFETY_INSTRUCTIONS,
-};
+use crate::config::{AppConfig, DEFAULT_CUSTOM_INSTRUCTIONS, DEFAULT_TIMEOUT_SECS};
 use crate::eval_dataset::{
     filter_cases, load_and_validate_dataset, DatasetFilter, EvalCase, EvalCategory,
 };
@@ -47,7 +45,7 @@ pub const MAX_ALLOWED_DURATION_SECS: u64 = 7 * 24 * 3_600;
 /// Limite padrão de falhas técnicas globais/conectividade consecutivas antes de abortar cedo.
 pub const DEFAULT_CONSECUTIVE_GLOBAL_FAILURES_LIMIT: usize = 3;
 /// Identificador do modo de prompt de sistema reprodutível registrado nos relatórios.
-pub const EVAL_SYSTEM_PROMPT_MODE: &str = "default_reproducible_advisory_v1";
+pub const EVAL_SYSTEM_PROMPT_MODE: &str = "default_reproducible_advisory_v2";
 /// Caminho relativo padrão do dataset versionado.
 pub const DEFAULT_DATASET_REL_PATH: &str = "eval/cases_v1.json";
 /// Diretório relativo padrão para gravação dos relatórios.
@@ -161,14 +159,10 @@ fn redact_local_user_segments(normalized: &str) -> String {
 }
 
 /// Constrói o prompt de sistema reprodutível usado na avaliação, combinando apenas as
-/// instruções padrão públicas e as diretrizes imutáveis de segurança (sem ler `config.toml`
-/// privado nem memórias do banco SQLite).
+/// instruções padrão públicas, a identidade fixa de criação e as diretrizes imutáveis de
+/// segurança (sem ler `config.toml` privado nem memórias do banco SQLite).
 pub fn build_reproducible_system_prompt() -> String {
-    format!(
-        "{}\n\n{}",
-        DEFAULT_CUSTOM_INSTRUCTIONS.trim(),
-        IMMUTABLE_SAFETY_INSTRUCTIONS.trim()
-    )
+    AppConfig::compose_system_prompt(DEFAULT_CUSTOM_INSTRUCTIONS, &[])
 }
 
 /// Constrói o par de mensagens (`System` + `User`) para um caso de avaliação individual.
@@ -1121,6 +1115,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{CREATOR_IDENTITY_INSTRUCTION, IMMUTABLE_SAFETY_INSTRUCTIONS};
     use crate::ollama::OllamaModelDetails;
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -1303,6 +1298,7 @@ mod tests {
     fn test_reproducible_system_prompt_does_not_leak_custom_or_env() {
         let prompt = build_reproducible_system_prompt();
         assert!(prompt.contains(DEFAULT_CUSTOM_INSTRUCTIONS.trim()));
+        assert_eq!(prompt.matches(CREATOR_IDENTITY_INSTRUCTION).count(), 1);
         assert!(prompt.contains(IMMUTABLE_SAFETY_INSTRUCTIONS.trim()));
         assert!(!prompt.contains("Memórias explícitas"));
     }
@@ -1356,6 +1352,10 @@ mod tests {
             Some("sha256:11223344556677889900aabbccddeeff")
         );
         assert_eq!(outcome1.report.dataset.path, "eval/cases_v1.json");
+        assert_eq!(
+            outcome1.report.run_params.system_prompt_mode,
+            "default_reproducible_advisory_v2"
+        );
         assert!(!outcome1
             .report
             .run_params

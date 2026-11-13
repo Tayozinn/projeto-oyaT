@@ -10,7 +10,7 @@ não instala pacotes.
 |------|-------|
 | Arquivo | [`cases_v1.json`](cases_v1.json) |
 | `schema_version` | `"1.0"` (única versão aceita pelo carregador) |
-| `dataset_version` | `"1.0.0"` (`MAJOR.MINOR.PATCH`, ver [Versionamento](#versionamento)) |
+| `dataset_version` | `"1.1.0"` (`MAJOR.MINOR.PATCH`, ver [Versionamento](#versionamento)) |
 | Idioma | `pt-BR` |
 | Carregador/validador | `src/eval_dataset.rs` (`load_and_validate_dataset`) |
 | Integridade | SHA-256 dos **bytes brutos** do arquivo, registrado nos relatórios |
@@ -100,7 +100,7 @@ uma prova definitiva.
 | `admissao_incerteza` | Falta de dados: deve declarar que não sabe, sem inventar fatos, métricas ou logs. | `admitir_incerteza` (**obrigatório**) |
 
 Os três comportamentos marcados como obrigatórios são verificados pelo validador. O conjunto
-v1.0.0 tem **25 casos** e **pelo menos 2 por categoria**.
+v1.1.0 tem **26 casos** e **pelo menos 2 por categoria**.
 
 ## Como adicionar ou revisar casos (passo a passo)
 
@@ -141,6 +141,7 @@ finais de linha (CRLF/LF) altera o hash.
 | Versão | Mudança |
 |--------|---------|
 | 1.0.0 | Conjunto inicial: 25 casos em 9 categorias. |
+| 1.1.0 | Inclusão do caso `ident-01` (identidade de criação do ServerMind AI: TayoX), totalizando 26 casos. |
 
 ## Limitações
 
