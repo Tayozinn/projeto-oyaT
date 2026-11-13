@@ -1,0 +1,13 @@
+[package]
+name = "servermind-ai"
+version = "0.1.0"
+edition = "2021"
+description = "SERVERMIND AI - Fase 1: Assistente conversacional local para administradores usando Ollama e SQLite"
+authors = ["SERVERMIND Team"]
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
