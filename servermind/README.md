@@ -1,0 +1,354 @@
+# ServerMind AI
+
+**SERVERMIND AI — Assistente Conversacional Local (Fase 0)**
+
+O ServerMind AI é um assistente conversacional local escrito em Rust para apoiar administradores de sistemas e servidores. Nesta etapa, ele se concentra na base local com Ollama e SQLite: conversar com um modelo instalado na própria máquina, manter histórico persistido e controlar instruções e memórias explícitas de forma segura.
+
+O projeto é **estritamente consultivo**: ele ainda não administra servidores, não executa comandos no sistema operacional, não altera arquivos do sistema e não acessa redes externas. Ele ajuda a tirar dúvidas, analisar cenários e estruturar comandos para que o próprio administrador revise e execute manualmente.
+
+## O que já funciona
+
+- Conversa local com modelos servidos pelo [Ollama](https://ollama.com/) via loopback (`127.0.0.1`, `localhost` ou `[::1]`).
+- Seleção entre os modelos já instalados localmente, sem downloads automáticos.
+- Histórico de conversas persistido em SQLite, podendo reabrir conversas anteriores ou iniciar novas conversas isoladas.
+- Instruções personalizadas (até 2.000 caracteres), sempre combinadas com diretrizes imutáveis de segurança.
+- Memórias explícitas, registradas apenas sob demanda com `:remember`.
+- Consulta ao banco SQLite em modo somente leitura via `abrir-sqlite.py`.
+
+## Pré-requisitos
+
+- **Windows com PowerShell** (os comandos deste guia usam PowerShell).
+- **[Rust e Cargo](https://www.rust-lang.org/tools/install)** instalados.
+- **[Ollama](https://ollama.com/)** instalado e em execução local.
+- **Pelo menos um modelo instalado no Ollama** (o ServerMind não baixa modelos automaticamente).
+- **Python 3** *(opcional)* — necessário apenas se você quiser usar o script `abrir-sqlite.py` para inspecionar o banco em modo somente leitura.
+
+Para baixar um modelo pequeno de exemplo pelo Ollama:
+
+```powershell
+ollama pull llama3.2
+```
+
+## Compilação, testes e execução (PowerShell)
+
+Entre na pasta do projeto:
+
+```powershell
+cd "C:\caminho\para\servermind-ai"
+```
+
+Se o Ollama ainda não estiver ativo em segundo plano, inicie o serviço em outro terminal:
+
+```powershell
+ollama serve
+```
+
+Comandos principais no PowerShell:
+
+```powershell
+# Verificar compilação sem gerar binário final
+cargo check
+
+# Executar a suíte completa de testes unitários e de integração isolados
+cargo test
+
+# Compilar o binário (debug ou release)
+cargo build
+cargo build --release
+
+# Compilar e iniciar diretamente pela pasta do projeto
+cargo run
+```
+
+Também é possível executar o binário compilado diretamente (por exemplo, `.\target\debug\servermind-ai.exe` ou `.\target\release\servermind-ai.exe`) a partir de outro diretório de trabalho sem criar bancos acidentais nessa pasta (veja a seção **Localização de configuração e banco** abaixo).
+
+> **Observação:** na primeira compilação em uma máquina limpa, o Cargo precisará baixar as dependências listadas em `Cargo.toml` / `Cargo.lock`.
+
+## Comandos disponíveis no chat
+
+Os comandos começam com `:` (a maioria também aceita `/` como prefixo alternativo).
+
+| Comando | Para que serve |
+| --- | --- |
+| `:help` | Mostra a lista de comandos. |
+| `:status` | Verifica a conexão com o Ollama local e a disponibilidade do modelo ativo. |
+| `:models` | Lista os modelos instalados e permite escolher um. |
+| `:model <nome ou número>` | Troca para um modelo instalado e persiste a escolha. |
+| `:history` | Mostra conversas salvas e permite reabrir uma. |
+| `:history <id>` ou `:load <id>` | Abre uma conversa existente pelo ID. |
+| `:new` | Começa uma nova conversa sem apagar as anteriores. |
+| `:context` | Exibe as mensagens da conversa atual. |
+| `:instructions` | Mostra as instruções personalizadas atuais e as diretrizes fixas. |
+| `:instructions <texto>` | Define instruções personalizadas (limite de 2.000 caracteres). |
+| `:instructions edit` | Abre edição interativa das instruções. |
+| `:instructions reset` | Restaura as instruções padrão. |
+| `:remember <texto>` | Salva uma memória explicitamente no SQLite. |
+| `:memories` | Lista as memórias salvas. |
+| `:forget <id>` | Apaga uma memória pelo ID. |
+| `:quit` | Encerra o programa. |
+
+As instruções personalizadas nunca removem as diretrizes imutáveis que mantêm o assistente no modo consultivo.
+
+## Localização de configuração e banco (Regra da Fase 0)
+
+A partir da Fase 0, a resolução de `config.toml` e do banco SQLite (`database_path`) segue uma regra determinística para evitar depender silenciosamente do diretório de trabalho (`CWD`) e criar múltiplos bancos espalhados:
+
+### 1. Arquivo de configuração (`config.toml`)
+
+- **Quando `SERVERMIND_CONFIG` NÃO está definida**:
+  1. Se a pasta do executável contiver `config.toml`, usa essa pasta como diretório base;
+  2. Caso contrário, se o executável estiver dentro de uma pasta `target` cujo diretório pai contenha `Cargo.toml` (como em `cargo run`, `target\debug`, `target\release`, `target\debug\deps`), usa a raiz do projeto como diretório base;
+  3. Nos demais casos (ex.: executável copiado para outra pasta), usa a própria pasta do executável (com fallback para o diretório atual apenas se não for possível obter o caminho do executável).
+  - Se `<diretório_base>\config.toml` existir, ele é carregado; se não existir, o programa usa os valores padrão internos e ancora `config_file_path` em `<diretório_base>\config.toml`.
+- **Quando `SERVERMIND_CONFIG` está definida**:
+  - Se for um caminho relativo, ele é resolvido em relação ao diretório atual do PowerShell (`CWD`); se for absoluto, é usado diretamente.
+  - Se estiver vazia, apontar para um diretório ou apontar para um arquivo inexistente, o programa falha imediatamente com erro explícito (sem fallback silencioso).
+  - A pasta pai desse arquivo passa a ser a âncora para `database_path` relativos definidos dentro do TOML.
+
+### 2. Banco de dados SQLite (`database_path`)
+
+- **Com `SERVERMIND_DB_PATH` definida**:
+  - O valor `:memory:` é mantido como banco em memória.
+  - Caminhos absolutos são usados diretamente.
+  - Caminhos relativos são resolvidos em relação ao diretório atual do PowerShell (`CWD`), por serem informados explicitamente no terminal.
+- **Sem `SERVERMIND_DB_PATH` (usando `database_path` do `config.toml` ou o padrão `servermind.db`)**:
+  - `:memory:` e caminhos absolutos são mantidos.
+  - Caminhos relativos (como `servermind.db`) são resolvidos em relação ao diretório base do `config.toml` (não ao `CWD`).
+- **Importante sobre diretório pai e permissões**:
+  - O diretório pai do banco precisa existir e permitir gravação. Caminhos vazios, terminados em `\` ou `/`, apontando para diretórios existentes, arquivos marcados como somente leitura ou arquivos não-SQLite são rejeitados com diagnóstico claro.
+- **Persistência com `:model` e `:instructions`**:
+  - Ao atualizar modelo ou instruções pelo chat, `config.toml` preserva `ollama_url`, `database_path` relativo e `request_timeout_secs` originais do arquivo, sem sobrescrevê-los com variáveis de ambiente temporárias nem converter `database_path` relativo em caminho absoluto da máquina.
+
+### 3. Variáveis de ambiente suportadas
+
+```powershell
+$env:SERVERMIND_CONFIG = "C:\caminho\para\config.toml"
+$env:SERVERMIND_OLLAMA_URL = "http://127.0.0.1:11434"
+$env:SERVERMIND_MODEL = "llama3.2"
+$env:SERVERMIND_DB_PATH = "C:\caminho\para\servermind.db"
+$env:SERVERMIND_TIMEOUT_SECS = "120"
+```
+
+Se qualquer uma dessas variáveis estiver definida com valor vazio (`""` ou espaços), ou se `SERVERMIND_TIMEOUT_SECS` não for um inteiro maior que zero, o programa interrompe a inicialização com erro explícito em vez de ignorar a variável silenciosamente.
+
+Para remover uma variável na sessão atual do PowerShell:
+
+```powershell
+Remove-Item Env:SERVERMIND_DB_PATH
+```
+
+## Como localizar um banco antigo e escolher outro banco
+
+Em versões anteriores à Fase 0, o padrão `database_path = "servermind.db"` era resolvido a partir do diretório em que você iniciava o programa. Se você executou o ServerMind a partir de pastas diferentes, pode haver arquivos `servermind.db` antigos nessas pastas.
+
+O ServerMind **não move nem migra** bancos existentes automaticamente. Para localizar arquivos `servermind.db` existentes no seu usuário pelo PowerShell:
+
+```powershell
+Get-ChildItem -Path $HOME -Recurse -Filter "servermind.db" -ErrorAction SilentlyContinue | Select-Object FullName, LastWriteTime, Length
+```
+
+Depois de identificar o banco desejado:
+
+- **Uso pontual na sessão atual (PowerShell)**:
+  ```powershell
+  $env:SERVERMIND_DB_PATH = "C:\caminho\encontrado\servermind.db"
+  cargo run
+  ```
+- **Uso permanente no `config.toml`**:
+  Edite `database_path` em `config.toml` apontando para o arquivo desejado (relativo à pasta do `config.toml` ou absoluto).
+- **Inspeção somente leitura com Python**:
+  ```powershell
+  python .\abrir-sqlite.py "C:\caminho\encontrado\servermind.db"
+  ```
+
+## Banco SQLite e consulta somente leitura (`abrir-sqlite.py`)
+
+Para consultar o banco padrão que fica na pasta do projeto:
+
+```powershell
+python .\abrir-sqlite.py
+```
+
+O script usa a biblioteca padrão `sqlite3` do Python, abre o banco com `?mode=ro` (somente leitura) e aceita apenas consultas `SELECT` ou `WITH`.
+
+Exemplos dentro do prompt `sqlite>`:
+
+```sql
+.tables
+SELECT id, title, model, created_at FROM conversations ORDER BY id DESC LIMIT 20;
+SELECT id, conversation_id, role, created_at FROM messages ORDER BY id DESC LIMIT 20;
+.quit
+```
+
+Para consultar outro arquivo de banco:
+
+```powershell
+python .\abrir-sqlite.py "C:\caminho\para\outro-banco.db"
+```
+
+## Configuração (`config.toml`)
+
+O arquivo [`config.toml`](config.toml) guarda as configurações locais padrão:
+
+```toml
+ollama_url = "http://127.0.0.1:11434"
+model = "llama3.2"
+database_path = "servermind.db"
+request_timeout_secs = 120
+```
+
+## Privacidade e segurança local
+
+- **Inferência local restrita a loopback**: a URL do Ollama aceita apenas `http://` ou `https://` com host literal `127.0.0.1`, `localhost` ou `[::1]`. Endereços externos, `0.0.0.0`, `[::]`, credenciais (`@`), barras invertidas (`\`), caminhos extras, query strings, fragmentos, portas inválidas e IPs ofuscados são bloqueados.
+- **Proteção de rede do cliente HTTP**: o cliente do Ollama desabilita proxy (`no_proxy`), bloqueia redirecionamentos HTTP (`Policy::none()`) e valida na resolução do sistema (`ToSocketAddrs`) que `localhost` aponta exclusivamente para endereços de loopback.
+- **Privacidade em diagnósticos**: mensagens de erro reportam causa, próxima ação e detalhe técnico seguro, sem expor prompts, histórico de conversas, memórias explícitas ou conteúdo de `system_prompt`.
+- **Privacidade no Git (`.gitignore`)**: arquivos locais sensíveis e temporários (`target/`, `*.db`, `*.db-journal`, `*.db-wal`, `*.db-shm`, `*.sqlite*`, `.env`, `.env.*`, logs e temporários) são ignorados.
+
+## Solução de problemas comuns
+
+- **Ollama offline / conexão recusada**:
+  - Confirme se o Ollama está instalado e inicie o serviço em outro terminal com `ollama serve`.
+  - Verifique se `ollama_url` (ou `SERVERMIND_OLLAMA_URL`) corresponde à porta ativa do Ollama (padrão `http://127.0.0.1:11434`).
+- **Modelo ausente (HTTP 404 ou nenhum modelo instalado)**:
+  - O ServerMind não baixa modelos sozinho. Execute `ollama pull llama3.2` (ou o modelo desejado) no terminal e use `:models` ou `:model <nome>` no chat.
+- **Tempo limite esgotado (`timeout`)**:
+  - Na primeira carga do modelo em RAM/VRAM ou em hardware limitado, o Ollama pode demorar mais que 120s. Aumente `request_timeout_secs` em `config.toml` ou defina `$env:SERVERMIND_TIMEOUT_SECS = "300"`.
+- **URL bloqueada pela política local (`0.0.0.0` ou host externo)**:
+  - Mesmo que o Ollama esteja ouvindo em `0.0.0.0`, use `http://127.0.0.1:11434`, `http://localhost:11434` ou `http://[::1]:11434` no cliente.
+  - Se `localhost` falhar na resolução local ou apontar para IP não-loopback no arquivo `hosts`, use `http://127.0.0.1:11434`.
+- **Erro ao abrir o banco SQLite (diretório, pasta inexistente, somente leitura ou arquivo inválido)**:
+  - Certifique-se de que `database_path` / `SERVERMIND_DB_PATH` aponta para um **arquivo** (não uma pasta), que a **pasta pai já existe** e que há permissão de leitura e escrita (sem atributo somente leitura).
+  - Se o banco estiver bloqueado por outro processo (como outra instância aberta), feche a outra sessão e tente novamente.
+- **Erro de `SERVERMIND_CONFIG` ou sintaxe TOML inválida**:
+  - Se `SERVERMIND_CONFIG` estiver definida, o arquivo precisa existir e ser válido. Revise aspas/chaves no TOML ou remova a variável com `Remove-Item Env:SERVERMIND_CONFIG`.
+
+## Limites atuais
+
+- **Sem execução de comandos**: o assistente é exclusivamente conversacional/consultivo.
+- **Sem edição automática do sistema ou acesso remoto**: nenhuma alteração em arquivos do servidor ou conexões SSH/remotas é feita pelo programa.
+- **Sem download automático de modelos**: depende dos modelos já instalados no Ollama local.
+- **Sem streaming de resposta ou interface gráfica**: interação síncrona via terminal (CLI).
+- **Memórias apenas explícitas**: nada é salvo como memória permanente sem `:remember`.
+- **Sem migração automática de bancos**: bancos criados anteriormente em outros diretórios permanecem onde foram gravados até que você os aponte manualmente.
+
+## Avaliação automatizada de respostas (CLI offline e reprodutível)
+
+Além do chat interativo, o `servermind-ai` inclui um subcomando `eval` dedicado a avaliar modelos locais de forma reproduzível e segura.
+
+### Objetivo, escopo consultivo e limites
+
+- **Objetivo**: medir qualidade, clareza, reconhecimento de incerteza e segurança de respostas em PT-BR sobre um conjunto versionado de cenários fictícios ([`eval/cases_v1.json`](eval/cases_v1.json)), gerando relatórios estruturados para comparação técnica e revisão humana.
+- **Não treina nem altera modelos**: a avaliação **não faz fine-tuning, não modifica pesos, não cria/altera `Modelfile` e não muda o comportamento do modelo**.
+- **Produto estritamente consultivo**: o assistente continua sem executar comandos no servidor, sem editar arquivos do sistema e sem acessar servidores remotos.
+- **Isolamento total de privacidade e banco**: os subcomandos `eval ...` desviam antes da abertura do SQLite e **nunca lêem nem gravam em `servermind.db`**. Também usam um prompt de sistema padrão reproduzível, sem incorporar seu `system_prompt` privado do `config.toml`, memórias explícitas ou variáveis de ambiente nos relatórios nem nos prompts enviados.
+- **Sem automação invasiva**: não baixa modelos (`ollama pull`), não inicia/para o serviço do Ollama e não envia dados para fora de endereços de loopback (`127.0.0.1`, `localhost`, `[::1]`).
+
+### Pré-requisitos (Ollama e modelos locais)
+
+1. Para listar os casos do conjunto offline, **não é necessário** ter o Ollama rodando:
+
+   ```powershell
+   cargo run --locked -- eval list-cases
+   ```
+
+2. Para listar modelos instalados ou executar uma avaliação real, inicie o Ollama localmente em outro terminal (`ollama serve`) e garanta que já exista pelo menos um modelo instalado (`ollama pull llama3.2`):
+
+   ```powershell
+   cargo run --locked -- eval list-models
+   ```
+
+3. Consulte todas as opções disponíveis a qualquer momento com:
+
+   ```powershell
+   cargo run --locked -- eval --help
+   ```
+
+### Execução pequena, filtros e comparação entre modelos
+
+Execute uma avaliação pequena (concorrência fixa = `1`, `1x` por caso por padrão) para validar o fluxo rapidamente:
+
+```powershell
+cargo run --locked -- eval run --model llama3.2 --category explicacao_conceitos --limit 2
+```
+
+Filtros disponíveis (`--category` e `--case` aceitam repetição ou lista separada por vírgula):
+
+- **Categorias (`--category`)**: `explicacao_conceitos`, `diagnostico_evidencia_suficiente`, `diagnostico_info_insuficiente`, `interpretacao_logs`, `sugestao_comandos_revisao`, `prevencao_comandos_destrutivos`, `fora_de_escopo`, `instrucao_maliciosa`, `admissao_incerteza`.
+- **Casos específicos (`--case`)**: ex.: `--case exp-01 --case inj-01` ou `--case exp-01,inj-01`.
+
+Exemplo comparando dois modelos diferentes no mesmo recorte:
+
+```powershell
+cargo run --locked -- eval run --model llama3.2 --category prevencao_comandos_destrutivos,instrucao_maliciosa
+cargo run --locked -- eval run --model qwen2.5:7b-instruct --category prevencao_comandos_destrutivos,instrucao_maliciosa
+```
+
+### Duração máxima, timeout, repetições e cancelamento
+
+- `--timeout-secs <N>`: timeout individual de cada requisição ao Ollama (em segundos; padrão vindo de `config.toml` ou `120`).
+- `--max-duration <DUR>`: tempo máximo total da bateria (ex.: `30s`, `15m`, `7h`, `1h30m`; teto máximo de 7 dias), garantindo execução previsível e limitada sem loop infinito.
+- `--repeat <N>`: número de execuções por caso (`1` por padrão; teto máximo `20` se informado explicitamente).
+- **Cancelamento limpo (`Ctrl+C`)**: interrompe o lote de forma segura e grava um relatório parcial consistente com tudo o que já foi executado até o momento.
+- **Aborto por falhas globais**: após 3 falhas técnicas/conectividade consecutivas (ou 100% de falha/timeout/resposta vazia), a execução registra `global_failure_detected = true`, grava o relatório parcial e retorna código de saída diferente de zero.
+- **Códigos de saída da CLI**: `0` (concluído ou parada limpa no limite `--max-duration`), `1` (erro técnico ou `global_failure_detected`), `2` (argumentos/opções inválidos), `130` (cancelado via `Ctrl+C`).
+
+### Pasta de relatórios, anti-sobrescrita e `.gitignore`
+
+- Por padrão, cada execução cria uma nova subpasta única com timestamp UTC em `eval_reports/` (ou no caminho passado em `--out-dir`), gravando `report.json` e `report.md` via criação exclusiva (`create_new`), sem nunca sobrescrever execuções anteriores.
+- A pasta `eval_reports/` está listada no [`.gitignore`](.gitignore) para evitar envio acidental de relatórios locais ao controle de versão.
+
+### Como comparar duas execuções
+
+1. Abra os arquivos `report.md` (leitura humana) ou compare os `report.json` (automação) gerados em duas subpastas de `eval_reports/`.
+2. Confira primeiro a equivalência dos metadados: `dataset.sha256_hex`, `dataset.selected_cases_count`, `run_params` (filtros, `timeout_secs`, `repeat`, `system_prompt_mode`) e identificação completa do modelo informada pelo Ollama (`resolved_name`, `digest`, `parameter_size`, `quantization_level`).
+3. Verifique `execution_stats` (`failure_rate`, `timeout_rate`, `empty_response_rate`, `global_failure_detected`, `cancelled`, `max_duration_reached`) antes de comparar pontuações.
+4. Compare os agregados por categoria e por dimensão, revisando manualmente as respostas preservadas e os itens listados em `human_review_cases`.
+
+### Avaliação determinística vs. estimativa por juiz local (`--judge-model`)
+
+- **Verificações determinísticas (fonte principal)**: atribuem notas na escala `0–2` (`0 = Insuficiente`, `1 = Parcial`, `2 = Adequado`) nas 6 dimensões (`technical_correctness`, `relevance`, `clarity`, `uncertainty_recognition`, `safety`, `expected_behavior_fit`), checando resposta vazia, tamanho mínimo, conceitos esperados, sinais perigosos sem aviso, alegações falsas de execução, recusa a prompt injection e aderência ao comportamento esperado.
+- **Juiz LLM local opcional (`--judge-model <MODEL>`)**: gera uma avaliação adicional explicitamente rotulada como **estimativa** (`is_estimate = true`) e exibe aviso de *autoavaliação* caso o modelo juiz seja igual ao avaliado. O juiz local **não é um árbitro infalível**; divergências com a avaliação determinística ou falhas de JSON sinalizam o caso para revisão humana.
+- **Nota de responsabilidade**: pontuações automáticas auxiliam na triagem e comparação, mas **não garantem correção técnica** e não substituem a revisão de um administrador.
+
+### Como adicionar novos casos ao conjunto de avaliação
+
+Consulte o guia completo e as regras do schema `1.0` em [`eval/README.md`](eval/README.md) antes de editar [`eval/cases_v1.json`](eval/cases_v1.json). Utilize apenas cenários, hosts, IPs e logs **100% fictícios** em português.
+
+### Testes automatizados vs. teste manual opcional com Ollama local
+
+- `cargo test --locked` executa todos os testes unitários e de integração **100% offline** (com servidores HTTP simulados locais em diretório temporário, sem precisar de Ollama e sem tocar em `servermind.db`).
+- Se desejar realizar um teste manual ponta a ponta contra seu Ollama local (opcional):
+
+  ```powershell
+  # Terminal 1: garanta o Ollama ativo localmente
+  ollama serve
+
+  # Terminal 2: confira modelos e rode um caso único
+  cargo run --locked -- eval list-models
+  cargo run --locked -- eval run --model llama3.2 --category explicacao_conceitos --limit 1
+  ```
+
+## Estrutura do projeto
+
+- `src/main.rs`: roteamento CLI (`eval ...` isolado antes do SQLite), inicialização do chat e testes integrados offline.
+- `src/cli.rs`: comandos do subcomando `eval` e interface interativa de terminal.
+- `src/agent.rs`: coordenação de sessão, contexto, instruções e memórias explícitas.
+- `src/ollama.rs`: cliente HTTP síncrono local para a API do Ollama (`/api/tags` e `/api/chat`).
+- `src/storage.rs`: validação de caminho/permissões e persistência SQLite.
+- `src/config.rs`: carregamento determinístico de configuração, validação de URL local e gravação segura de `config.toml`.
+- `src/models.rs`: estruturas de dados compartilhadas.
+- `src/eval_dataset.rs`: carregamento, validação estrita, hash SHA-256 e filtragem do dataset `eval/cases_v1.json`.
+- `src/eval_metrics.rs`: rubrica `0–2` (6 dimensões), avaliação determinística e suporte opcional ao juiz local (estimativa).
+- `src/eval_report.rs`: agregação, utilitários UTC puros, renderização JSON/Markdown e gravação anti-sobrescrita em `eval_reports/`.
+- `src/eval_runner.rs`: executor sequencial (`concurrency = 1`), isolamento de prompt, duração máxima, `Ctrl+C` e detecção de falhas globais.
+- `eval/cases_v1.json` e `eval/README.md`: conjunto versionado de casos fictícios PT-BR e guia de extensão.
+- `abrir-sqlite.py`: utilitário Python para consulta SQL somente leitura.
+
+## Resumo das alterações da Fase 0
+
+- **Validação estrita da URL do Ollama (`0.2`)**: parsing estruturado via `reqwest::Url` + checagem da string bruta, bloqueio de `0.0.0.0`/`[::]`/userinfo/paths/queries/fragmentos/IPs ofuscados, cliente HTTP com `.no_proxy()` e `Policy::none()`, e verificação de loopback via `ToSocketAddrs`.
+- **Resolução determinística de caminhos (`0.1` / `0.3`)**: ancoragem previsível de `config.toml` e `database_path` sem criar múltiplos bancos por `CWD`, preservação de valores originais ao salvar `config.toml`, validação explícita de caminhos/permissões em `Storage::new` e propagação real de erros do SQLite em `AgentSession::new` (sem silenciamento).
+- **Erros e diagnósticos seguros (`0.4`)**: mensagens em português com causa, próxima ação e detalhe técnico sanitizado, sem expor prompts, conversas, memórias ou segredos.
+- **Privacidade local (`.gitignore`, `0.5`)**: cobertura ampliada de bancos SQLite/WAL/journal, arquivos `.env`, logs, temporários e pasta `eval_reports/`.
+- **Documentação e script de consulta (`0.6`)**: correção da consulta de exemplo em `abrir-sqlite.py` e `README.md` (removendo referência à coluna inexistente `updated_at`) e atualização completa do guia de uso e solução de problemas.
+- **Testes automatizados offline**: cobertura isolada em `std::env::temp_dir()` para URLs, caminhos relativos/absolutos, variáveis de ambiente, diretórios inexistentes, arquivos somente leitura/corrompidos, propagação de erros, privacidade em falhas e subcomandos `eval` sem tocar `servermind.db`.
