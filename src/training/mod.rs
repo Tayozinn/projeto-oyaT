@@ -19,6 +19,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+fn default_max_val_windows() -> usize {
+    128
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainingConfig {
     pub run_name: String,
@@ -33,6 +37,8 @@ pub struct TrainingConfig {
     pub max_grad_norm: f32,
     pub eval_interval: usize,
     pub checkpoint_interval: usize,
+    #[serde(default = "default_max_val_windows")]
+    pub max_val_windows: usize,
 }
 
 impl Default for TrainingConfig {
@@ -50,6 +56,7 @@ impl Default for TrainingConfig {
             max_grad_norm: 1.0,
             eval_interval: 25,
             checkpoint_interval: 50,
+            max_val_windows: default_max_val_windows(),
         }
     }
 }
@@ -258,8 +265,14 @@ impl Trainer {
         let mut history = Vec::new();
         let mut initial_train_loss = None;
         let mut final_train_loss = 0.0f32;
-        let mut window_cursor = self.current_step * self.config.batch_size.max(1);
         let batch_size = self.config.batch_size.max(1);
+        let total_seen_windows = self.current_step * batch_size;
+        let mut epoch = total_seen_windows / train_windows.len();
+        let mut epoch_pos = total_seen_windows % train_windows.len();
+        let mut order = shuffled_indices(train_windows.len(), 0x5EED_2026_u64 ^ (epoch as u64));
+
+        // Subamostragem uniforme determinística das janelas de validação para evitar gargalo em corpora grandes.
+        let eval_subset: Vec<Vec<usize>> = select_eval_windows(val_windows, self.config.max_val_windows);
 
         while self.current_step < self.config.max_steps {
             let step_start = Instant::now();
@@ -269,8 +282,13 @@ impl Trainer {
             let mut step_tokens = 0usize;
 
             for _ in 0..batch_size {
-                let win = &train_windows[window_cursor % train_windows.len()];
-                window_cursor += 1;
+                if epoch_pos >= order.len() {
+                    epoch += 1;
+                    epoch_pos = 0;
+                    order = shuffled_indices(train_windows.len(), 0x5EED_2026_u64 ^ (epoch as u64));
+                }
+                let win = &train_windows[order[epoch_pos]];
+                epoch_pos += 1;
                 let inputs = &win[..win.len() - 1];
                 let targets = &win[1..];
                 let (loss_sum, count) = self
@@ -314,8 +332,8 @@ impl Trainer {
             let should_eval = self.config.eval_interval > 0
                 && (self.current_step % self.config.eval_interval == 0
                     || self.current_step == self.config.max_steps);
-            let val_loss = if should_eval && !val_windows.is_empty() {
-                let v = evaluate_loss(&self.model, val_windows, pad_id);
+            let val_loss = if should_eval && !eval_subset.is_empty() {
+                let v = evaluate_loss(&self.model, &eval_subset, pad_id);
                 if v < self.best_val_loss {
                     self.best_val_loss = v;
                     save_checkpoint(
@@ -380,6 +398,34 @@ impl Trainer {
             history,
         })
     }
+}
+
+fn shuffled_indices(len: usize, seed: u64) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..len).collect();
+    let mut state = seed ^ 0x9E37_79B9_7F4A_7C15;
+    for i in (1..len).rev() {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        let j = (z as usize) % (i + 1);
+        idx.swap(i, j);
+    }
+    idx
+}
+
+pub fn select_eval_windows(val_windows: &[Vec<usize>], max_val_windows: usize) -> Vec<Vec<usize>> {
+    if val_windows.is_empty() || max_val_windows == 0 || val_windows.len() <= max_val_windows {
+        return val_windows.to_vec();
+    }
+    let mut out = Vec::with_capacity(max_val_windows);
+    let n = val_windows.len();
+    for i in 0..max_val_windows {
+        let pos = (i * n) / max_val_windows;
+        out.push(val_windows[pos].clone());
+    }
+    out
 }
 
 fn append_metric_jsonl(path: &Path, metric: &TrainStepMetrics) -> Result<(), String> {
@@ -471,6 +517,7 @@ mod tests {
             max_grad_norm: 1.0,
             eval_interval: 6,
             checkpoint_interval: 6,
+            max_val_windows: 64,
         };
 
         let mut trainer = Trainer::new(model, train_cfg.clone());
@@ -499,5 +546,22 @@ mod tests {
         assert!(!cmp.summary.is_empty());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shuffle_and_eval_window_cap_are_deterministic() {
+        let a = shuffled_indices(50, 42);
+        let b = shuffled_indices(50, 42);
+        assert_eq!(a, b);
+        assert_ne!(a, (0..50).collect::<Vec<_>>());
+        let mut sorted = a.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..50).collect::<Vec<_>>());
+
+        let windows: Vec<Vec<usize>> = (0..1000).map(|i| vec![i, i + 1]).collect();
+        let sampled = select_eval_windows(&windows, 64);
+        assert_eq!(sampled.len(), 64);
+        assert_eq!(sampled[0][0], 0);
+        assert!(sampled[63][0] > 950);
     }
 }

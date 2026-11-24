@@ -1992,6 +1992,7 @@ pub fn run_train_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn 
     let mut vocab_size: usize = 768;
     let mut learning_rate: f32 = 3e-3;
     let mut min_learning_rate: Option<f32> = None;
+    let mut max_val_windows: usize = 128;
 
     let parse_pos_usize = |flag: &str, raw: &str| -> Result<usize, String> {
         let v: usize = raw.parse().map_err(|_| {
@@ -2033,6 +2034,7 @@ pub fn run_train_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn 
                 let _ = writeln!(out, "  --steps <N>                 Número alvo de passos (padrão: 80)");
                 let _ = writeln!(out, "  --d-model <N> --layers <N> --heads <N> --ff <N> --seq-len <N> --vocab <N> --batch-size <N>");
                 let _ = writeln!(out, "  --lr <f32> --min-lr <f32>   Taxa de aprendizado inicial e mínima (cosine decay)");
+                let _ = writeln!(out, "  --max-val-windows <N>       Limite uniforme de janelas na validação periódica (padrão: 128)");
                 return 0;
             }
             "--dataset" if i + 1 < args.len() => {
@@ -2078,6 +2080,16 @@ pub fn run_train_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn 
             "--min-lr" if i + 1 < args.len() => {
                 match parse_pos_f32("--min-lr", &args[i + 1]) {
                     Ok(v) => min_learning_rate = Some(v),
+                    Err(e) => {
+                        let _ = writeln!(err, "{}", e);
+                        return 2;
+                    }
+                }
+                i += 2;
+            }
+            "--max-val-windows" if i + 1 < args.len() => {
+                match parse_pos_usize("--max-val-windows", &args[i + 1]) {
+                    Ok(v) => max_val_windows = v,
                     Err(e) => {
                         let _ = writeln!(err, "{}", e);
                         return 2;
@@ -2250,6 +2262,7 @@ pub fn run_train_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn 
             max_grad_norm: 1.0,
             eval_interval: (max_steps / 5).max(5),
             checkpoint_interval: (max_steps / 2).max(10),
+            max_val_windows,
         };
         let mut resumed = match crate::training::Trainer::resume_from_checkpoint(&latest_ckpt, train_cfg) {
             Ok(t) => t,
@@ -2301,6 +2314,7 @@ pub fn run_train_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn 
             max_grad_norm: 1.0,
             eval_interval: (max_steps / 5).max(5),
             checkpoint_interval: (max_steps / 2).max(10),
+            max_val_windows,
         };
         (tokenizer, crate::training::Trainer::new(model, train_cfg))
     };
