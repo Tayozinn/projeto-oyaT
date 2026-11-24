@@ -1966,6 +1966,8 @@ fn load_seed_corpus(dataset_path: &std::path::Path) -> Result<Vec<String>, Strin
 pub fn run_train_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let mut dataset_path = PathBuf::from("datasets/servermind_seed_v1.jsonl");
     let mut out_dir = PathBuf::from("checkpoints/servermind-neural-v1");
+    let mut run_name: Option<String> = None;
+    let mut resume = false;
     let mut max_steps: usize = 80;
     let mut d_model: usize = 128;
     let mut n_heads: usize = 4;
@@ -1974,6 +1976,8 @@ pub fn run_train_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn 
     let mut seq_len: usize = 64;
     let mut batch_size: usize = 4;
     let mut vocab_size: usize = 768;
+    let mut learning_rate: f32 = 3e-3;
+    let mut min_learning_rate: Option<f32> = None;
 
     let parse_pos_usize = |flag: &str, raw: &str| -> Result<usize, String> {
         let v: usize = raw.parse().map_err(|_| {
@@ -1988,6 +1992,19 @@ pub fn run_train_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn 
         Ok(v)
     };
 
+    let parse_pos_f32 = |flag: &str, raw: &str| -> Result<f32, String> {
+        let v: f32 = raw.parse().map_err(|_| {
+            format!(
+                "Valor inválido '{}' para '{}': esperado número decimal positivo.",
+                raw, flag
+            )
+        })?;
+        if !v.is_finite() || v <= 0.0 {
+            return Err(format!("'{}' deve ser maior que zero.", flag));
+        }
+        Ok(v)
+    };
+
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -1997,6 +2014,34 @@ pub fn run_train_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn 
             }
             "--out" if i + 1 < args.len() => {
                 out_dir = PathBuf::from(&args[i + 1]);
+                i += 2;
+            }
+            "--run-name" if i + 1 < args.len() => {
+                run_name = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--resume" => {
+                resume = true;
+                i += 1;
+            }
+            "--lr" if i + 1 < args.len() => {
+                match parse_pos_f32("--lr", &args[i + 1]) {
+                    Ok(v) => learning_rate = v,
+                    Err(e) => {
+                        let _ = writeln!(err, "{}", e);
+                        return 2;
+                    }
+                }
+                i += 2;
+            }
+            "--min-lr" if i + 1 < args.len() => {
+                match parse_pos_f32("--min-lr", &args[i + 1]) {
+                    Ok(v) => min_learning_rate = Some(v),
+                    Err(e) => {
+                        let _ = writeln!(err, "{}", e);
+                        return 2;
+                    }
+                }
                 i += 2;
             }
             "--steps" if i + 1 < args.len() => {
@@ -2094,70 +2139,129 @@ pub fn run_train_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn 
         }
     };
 
-    let split = crate::tokenizer::split_dataset(&examples, "seed_v1", 0.15, 0.10);
-    let corpus_refs: Vec<&str> = split.train.iter().map(|s| s.as_str()).collect();
-    let tokenizer = crate::tokenizer::BpeTokenizer::train_from_corpus(&corpus_refs, vocab_size);
+    let resolved_run_name = run_name.unwrap_or_else(|| {
+        out_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("servermind-neural")
+            .to_string()
+    });
+    let resolved_min_lr = min_learning_rate.unwrap_or(learning_rate * 0.1);
 
-    if let Err(e) = std::fs::create_dir_all(&out_dir) {
-        let _ = writeln!(err, "Falha ao criar '{}': {}", out_dir.display(), e);
-        return 1;
-    }
-    if let Err(e) = tokenizer.save(&out_dir.join("tokenizer.json")) {
-        let _ = writeln!(err, "{}", e);
-        return 1;
-    }
+    let split = crate::tokenizer::split_dataset(&examples, &resolved_run_name, 0.15, 0.10);
+    let latest_ckpt = out_dir.join("latest.bin");
+    let tok_path = out_dir.join("tokenizer.json");
 
-    let train_windows = crate::training::pack_sequences(&tokenizer, &split.train, seq_len);
+    let (tokenizer, mut trainer) = if resume {
+        if !tok_path.is_file() || !latest_ckpt.is_file() {
+            let _ = writeln!(
+                err,
+                "Flag --resume exige '{}' e '{}' existentes.",
+                tok_path.display(),
+                latest_ckpt.display()
+            );
+            return 1;
+        }
+        let tokenizer = match crate::tokenizer::BpeTokenizer::load(&tok_path) {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = writeln!(err, "{}", e);
+                return 1;
+            }
+        };
+        let train_cfg = crate::training::TrainingConfig {
+            run_name: resolved_run_name.clone(),
+            checkpoint_dir: out_dir.clone(),
+            max_steps,
+            batch_size,
+            seq_len,
+            learning_rate,
+            min_learning_rate: resolved_min_lr,
+            warmup_steps: (max_steps / 10).max(2),
+            weight_decay: 0.01,
+            max_grad_norm: 1.0,
+            eval_interval: (max_steps / 5).max(5),
+            checkpoint_interval: (max_steps / 2).max(10),
+        };
+        let mut resumed = match crate::training::Trainer::resume_from_checkpoint(&latest_ckpt, train_cfg) {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = writeln!(err, "{}", e);
+                return 1;
+            }
+        };
+        resumed.config.seq_len = resumed.model.config.max_seq_len;
+        (tokenizer, resumed)
+    } else {
+        let corpus_refs: Vec<&str> = split.train.iter().map(|s| s.as_str()).collect();
+        let tokenizer = crate::tokenizer::BpeTokenizer::train_from_corpus(&corpus_refs, vocab_size);
+
+        if let Err(e) = std::fs::create_dir_all(&out_dir) {
+            let _ = writeln!(err, "Falha ao criar '{}': {}", out_dir.display(), e);
+            return 1;
+        }
+        if let Err(e) = tokenizer.save(&tok_path) {
+            let _ = writeln!(err, "{}", e);
+            return 1;
+        }
+
+        let cfg = crate::neural::TransformerConfig {
+            vocab_size: tokenizer.vocab_size(),
+            max_seq_len: seq_len,
+            d_model,
+            n_heads,
+            n_layers,
+            d_ff,
+        };
+        let model = match crate::neural::ServerMindTransformer::new_random(cfg, 2026) {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = writeln!(err, "{}", e);
+                return 1;
+            }
+        };
+        let train_cfg = crate::training::TrainingConfig {
+            run_name: resolved_run_name.clone(),
+            checkpoint_dir: out_dir.clone(),
+            max_steps,
+            batch_size,
+            seq_len,
+            learning_rate,
+            min_learning_rate: resolved_min_lr,
+            warmup_steps: (max_steps / 10).max(2),
+            weight_decay: 0.01,
+            max_grad_norm: 1.0,
+            eval_interval: (max_steps / 5).max(5),
+            checkpoint_interval: (max_steps / 2).max(10),
+        };
+        (tokenizer, crate::training::Trainer::new(model, train_cfg))
+    };
+
+    let active_seq_len = trainer.model.config.max_seq_len;
+    let train_windows = crate::training::pack_sequences(&tokenizer, &split.train, active_seq_len);
     let val_src = if split.validation.is_empty() {
         &split.train
     } else {
         &split.validation
     };
-    let val_windows = crate::training::pack_sequences(&tokenizer, val_src, seq_len);
-
-    let cfg = crate::neural::TransformerConfig {
-        vocab_size: tokenizer.vocab_size(),
-        max_seq_len: seq_len,
-        d_model,
-        n_heads,
-        n_layers,
-        d_ff,
-    };
-    let total_params = cfg.total_params();
-    let model = match crate::neural::ServerMindTransformer::new_random(cfg, 2026) {
-        Ok(m) => m,
-        Err(e) => {
-            let _ = writeln!(err, "{}", e);
-            return 1;
-        }
-    };
-
-    let train_cfg = crate::training::TrainingConfig {
-        run_name: "servermind-neural-v1".to_string(),
-        checkpoint_dir: out_dir.clone(),
-        max_steps,
-        batch_size,
-        seq_len,
-        learning_rate: 3e-3,
-        min_learning_rate: 3e-4,
-        warmup_steps: (max_steps / 10).max(2),
-        weight_decay: 0.01,
-        max_grad_norm: 1.0,
-        eval_interval: (max_steps / 4).max(5),
-        checkpoint_interval: (max_steps / 2).max(10),
-    };
+    let val_windows = crate::training::pack_sequences(&tokenizer, val_src, active_seq_len);
+    let total_params = trainer.model.config.total_params();
 
     let _ = writeln!(
         out,
-        "Iniciando treinamento ServerMind Neural do zero: params={} | vocab={} | train_windows={} | val_windows={} | steps={}",
+        "Iniciando treinamento ServerMind Neural ({}): params={} | vocab={} | seq_len={} | lr={:.5} | train_windows={} | val_windows={} | step={} -> {}",
+        resolved_run_name,
         total_params,
         tokenizer.vocab.len(),
+        active_seq_len,
+        learning_rate,
         train_windows.len(),
         val_windows.len(),
+        trainer.current_step,
         max_steps
     );
 
-    let mut trainer = crate::training::Trainer::new(model, train_cfg);
     match trainer.train(&train_windows, &val_windows, tokenizer.pad_id()) {
         Ok(report) => {
             let _ = writeln!(
