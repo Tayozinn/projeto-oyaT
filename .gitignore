@@ -27,3 +27,4 @@ Thumbs.db
 /eval_reports/
 eval_reports/
 checkpoints/**/*.bin
+datasets/pretrain_books/
