@@ -1,4 +1,5 @@
 use crate::config::{AppConfig, DEFAULT_CUSTOM_INSTRUCTIONS};
+use crate::inference::{InferenceBackendKind, InferenceRouter, NeuralEngine};
 use crate::models::{Conversation, MemoryEntry, Message, OllamaHealth, Role};
 use crate::ollama::OllamaClient;
 use crate::storage::Storage;
@@ -13,6 +14,7 @@ pub struct AgentSession {
     config: AppConfig,
     storage: Storage,
     ollama: OllamaClient,
+    inference: InferenceRouter,
     current_conversation: Conversation,
     context_messages: Vec<Message>,
 }
@@ -25,7 +27,7 @@ impl AgentSession {
     ) -> Result<Self, String> {
         // Restaura o modelo persistido localmente (a menos que SERVERMIND_MODEL tenha sido forçado no ambiente)
         if !config.model_from_env {
-            if let Ok(Some(saved_model)) = storage.get_setting(SETTING_ACTIVE_MODEL) {
+            if let Some(saved_model) = storage.get_setting(SETTING_ACTIVE_MODEL)? {
                 let trimmed = saved_model.trim();
                 if !trimmed.is_empty() {
                     config.model = trimmed.to_string();
@@ -33,18 +35,21 @@ impl AgentSession {
             }
         }
 
-        // Restaura instruções personalizadas persistidas no SQLite, se existirem e forem válidas
-        if let Ok(Some(saved_instructions)) = storage.get_setting(SETTING_CUSTOM_INSTRUCTIONS) {
-            if let Ok(valid) = AppConfig::validate_custom_instructions(&saved_instructions) {
-                config.custom_instructions = valid;
-            }
+        // Restaura instruções personalizadas persistidas no SQLite, propagando erros reais do banco
+        if let Some(saved_instructions) = storage.get_setting(SETTING_CUSTOM_INSTRUCTIONS)? {
+            config.custom_instructions =
+                AppConfig::validate_custom_instructions(&saved_instructions).map_err(|_| {
+                    "As instruções personalizadas salvas no banco SQLite são inválidas (vazias ou acima do limite permitido).\n\
+                     Causa: o valor armazenado em 'app_settings' não atende às regras atuais de validação.\n\
+                     Próxima ação: corrija ou remova a chave 'custom_instructions' em 'app_settings' no banco SQLite, ou defina outro banco via SERVERMIND_DB_PATH."
+                        .to_string()
+                })?;
         }
 
-        let memories = storage.list_memories().unwrap_or_default();
+        let memories = storage.list_memories()?;
         let system_prompt = config.effective_system_prompt(&memories);
 
-        let current_conversation =
-            storage.create_conversation("Nova conversa", &config.model)?;
+        let current_conversation = storage.create_conversation("Nova conversa", &config.model)?;
 
         let system_msg = Message::new(Role::System, system_prompt);
 
@@ -52,9 +57,28 @@ impl AgentSession {
             config,
             storage,
             ollama,
+            inference: InferenceRouter::Ollama,
             current_conversation,
             context_messages: vec![system_msg],
         })
+    }
+
+    pub fn backend_kind(&self) -> InferenceBackendKind {
+        self.inference.kind()
+    }
+
+    pub fn use_ollama_backend(&mut self) {
+        self.inference = InferenceRouter::Ollama;
+    }
+
+    pub fn use_neural_backend(
+        &mut self,
+        checkpoint_dir: &std::path::Path,
+    ) -> Result<(usize, f32), String> {
+        let engine = NeuralEngine::load_from_dir(checkpoint_dir)?;
+        let info = (engine.step, engine.best_val_loss);
+        self.inference = InferenceRouter::ServerMindNeural(engine);
+        Ok(info)
     }
 
     pub fn config(&self) -> &AppConfig {
@@ -80,7 +104,9 @@ impl AgentSession {
     pub fn select_installed_model(&mut self, selection: &str) -> Result<String, String> {
         let trimmed = selection.trim();
         if trimmed.is_empty() {
-            return Err("Informe o nome ou o número do modelo instalado que deseja selecionar.".to_string());
+            return Err(
+                "Informe o nome ou o número do modelo instalado que deseja selecionar.".to_string(),
+            );
         }
 
         let installed = self.ollama.list_installed_models()?;
@@ -112,26 +138,44 @@ impl AgentSession {
             )
         })?;
 
+        let mut updated_cfg = self.config.clone();
+        updated_cfg.model = resolved.clone();
+
+        // Persiste no SQLite e no arquivo config.toml antes de mutar o estado em memória
+        self.storage.set_setting(SETTING_ACTIVE_MODEL, &resolved)?;
+        if let Err(err) = self
+            .storage
+            .update_conversation_model(self.current_conversation.id, &resolved)
+        {
+            let _ = self
+                .storage
+                .set_setting(SETTING_ACTIVE_MODEL, &self.config.model);
+            return Err(err);
+        }
+        if let Err(err) = updated_cfg.save_to_file() {
+            let _ = self
+                .storage
+                .set_setting(SETTING_ACTIVE_MODEL, &self.config.model);
+            let _ = self.storage.update_conversation_model(
+                self.current_conversation.id,
+                &self.current_conversation.model,
+            );
+            return Err(err);
+        }
+
         self.config.model = resolved.clone();
         self.current_conversation.model = resolved.clone();
-
-        // Persiste no SQLite e no arquivo config.toml para manter ativo ao reiniciar
-        self.storage.set_setting(SETTING_ACTIVE_MODEL, &resolved)?;
-        let _ = self
-            .storage
-            .update_conversation_model(self.current_conversation.id, &resolved);
-        self.config.save_to_file()?;
 
         Ok(resolved)
     }
 
     /// Inicia uma nova conversa separada no SQLite, preservando integralmente todas as conversas anteriores.
     pub fn start_new_conversation(&mut self) -> Result<&Conversation, String> {
+        let system_prompt = self.build_effective_system_prompt()?;
         let conv = self
             .storage
             .create_conversation("Nova conversa", &self.config.model)?;
         self.current_conversation = conv;
-        let system_prompt = self.build_effective_system_prompt()?;
         self.context_messages = vec![Message::new(Role::System, system_prompt)];
         Ok(&self.current_conversation)
     }
@@ -187,23 +231,34 @@ impl AgentSession {
     /// preservando sempre as diretrizes imutáveis de segurança.
     pub fn set_custom_instructions(&mut self, raw_input: &str) -> Result<(), String> {
         let validated = AppConfig::validate_custom_instructions(raw_input)?;
-        self.config.custom_instructions = validated.clone();
-
-        self.storage
-            .set_setting(SETTING_CUSTOM_INSTRUCTIONS, &validated)?;
-        self.config.save_to_file()?;
-        self.refresh_system_message_in_context()
+        self.apply_custom_instructions(validated)
     }
 
     /// Restaura as instruções personalizadas para o valor padrão e persiste a alteração localmente.
     pub fn reset_custom_instructions(&mut self) -> Result<(), String> {
-        let default_text = DEFAULT_CUSTOM_INSTRUCTIONS.to_string();
-        self.config.custom_instructions = default_text.clone();
+        self.apply_custom_instructions(DEFAULT_CUSTOM_INSTRUCTIONS.to_string())
+    }
+
+    fn apply_custom_instructions(&mut self, new_instructions: String) -> Result<(), String> {
+        let mut updated_cfg = self.config.clone();
+        updated_cfg.custom_instructions = new_instructions.clone();
+
+        let memories = self.storage.list_memories()?;
+        let new_prompt = updated_cfg.effective_system_prompt(&memories);
 
         self.storage
-            .set_setting(SETTING_CUSTOM_INSTRUCTIONS, &default_text)?;
-        self.config.save_to_file()?;
-        self.refresh_system_message_in_context()
+            .set_setting(SETTING_CUSTOM_INSTRUCTIONS, &new_instructions)?;
+        if let Err(err) = updated_cfg.save_to_file() {
+            let _ = self.storage.set_setting(
+                SETTING_CUSTOM_INSTRUCTIONS,
+                &self.config.custom_instructions,
+            );
+            return Err(err);
+        }
+
+        self.config.custom_instructions = new_instructions;
+        self.replace_system_message_in_context(new_prompt);
+        Ok(())
     }
 
     /// Salva uma memória explicitamente solicitada pelo administrador por comando dedicado.
@@ -229,63 +284,92 @@ impl AgentSession {
 
     /// Envia uma mensagem comum do administrador ao modelo ativo no Ollama, mantendo o contexto
     /// da conversa atual e salvando apenas as mensagens da conversa no SQLite (nunca salva memórias implicitamente).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn send_user_message(&mut self, user_input: &str) -> Result<String, String> {
+        self.send_user_message_inner(user_input, None)
+    }
+
+    /// Versão em streaming de [`Self::send_user_message`]: transmite cada fragmento recebido
+    /// do Ollama via `on_chunk` e aplica os guardrails determinísticos antes de persistir.
+    pub fn send_user_message_streaming<F>(
+        &mut self,
+        user_input: &str,
+        mut on_chunk: F,
+    ) -> Result<String, String>
+    where
+        F: FnMut(&str),
+    {
+        self.send_user_message_inner(user_input, Some(&mut on_chunk))
+    }
+
+    fn send_user_message_inner(
+        &mut self,
+        user_input: &str,
+        on_chunk: Option<&mut dyn FnMut(&str)>,
+    ) -> Result<String, String> {
         let trimmed = user_input.trim();
         if trimmed.is_empty() {
             return Err("A mensagem não pode estar vazia.".to_string());
         }
 
-        // Atualiza o título da conversa automaticamente na primeira mensagem do usuário
-        let is_first_user_msg = !self
-            .context_messages
-            .iter()
-            .any(|m| m.role == Role::User);
-
-        let previous_title = self.current_conversation.title.clone();
-        if is_first_user_msg && previous_title == "Nova conversa" {
-            let title = Self::summarize_title(trimmed);
-            let _ = self
-                .storage
-                .update_conversation_title(self.current_conversation.id, &title);
-            self.current_conversation.title = title;
-        }
+        let is_first_user_msg = !self.context_messages.iter().any(|m| m.role == Role::User);
+        let is_default_title = self.current_conversation.title == "Nova conversa";
+        let new_title = if is_first_user_msg && is_default_title {
+            Some(Self::summarize_title(trimmed))
+        } else {
+            None
+        };
 
         let user_msg = Message::new(Role::User, trimmed);
-        self.context_messages.push(user_msg);
-
-        match self
-            .ollama
-            .send_chat(&self.config.model, &self.context_messages)
+        const MAX_CONTEXT_HISTORY_MSGS: usize = 12;
+        let mut request_messages = Vec::with_capacity(MAX_CONTEXT_HISTORY_MSGS + 3);
+        if let Some(sys) = self
+            .context_messages
+            .first()
+            .filter(|m| m.role == Role::System)
         {
-            Ok(reply) => {
-                self.storage.save_message(
-                    self.current_conversation.id,
-                    Role::User,
-                    trimmed,
-                )?;
-                self.storage.save_message(
-                    self.current_conversation.id,
-                    Role::Assistant,
-                    &reply,
-                )?;
-
-                self.current_conversation.message_count += 2;
-                self.context_messages
-                    .push(Message::new(Role::Assistant, reply.clone()));
-
-                Ok(reply)
-            }
-            Err(err) => {
-                self.context_messages.pop();
-                if is_first_user_msg && previous_title == "Nova conversa" {
-                    let _ = self
-                        .storage
-                        .update_conversation_title(self.current_conversation.id, &previous_title);
-                    self.current_conversation.title = previous_title;
-                }
-                Err(err)
-            }
+            request_messages.push(sys.clone());
         }
+        let non_system: Vec<&Message> = self
+            .context_messages
+            .iter()
+            .filter(|m| m.role != Role::System)
+            .collect();
+        let skip = non_system.len().saturating_sub(MAX_CONTEXT_HISTORY_MSGS);
+        for msg in non_system.into_iter().skip(skip) {
+            request_messages.push(msg.clone());
+        }
+        let kb_hits = crate::knowledge::retrieve_relevant_notes(trimmed, 2);
+        if let Some(grounding) = crate::knowledge::format_grounding_note(&kb_hits) {
+            request_messages.push(Message::new(Role::System, grounding));
+        }
+        request_messages.push(user_msg.clone());
+
+        let raw_reply = self.inference.generate(
+            &self.ollama,
+            &self.config.model,
+            &request_messages,
+            trimmed,
+            on_chunk,
+        )?;
+        let reply = crate::guardrails::apply_advisory_guardrails(trimmed, &raw_reply);
+
+        let _ = self.storage.save_conversation_turn(
+            self.current_conversation.id,
+            trimmed,
+            &reply,
+            new_title.as_deref(),
+        )?;
+
+        if let Some(title) = new_title {
+            self.current_conversation.title = title;
+        }
+        self.current_conversation.message_count += 2;
+        self.context_messages.push(user_msg);
+        self.context_messages
+            .push(Message::new(Role::Assistant, reply.clone()));
+
+        Ok(reply)
     }
 
     fn build_effective_system_prompt(&self) -> Result<String, String> {
@@ -295,19 +379,27 @@ impl AgentSession {
 
     fn refresh_system_message_in_context(&mut self) -> Result<(), String> {
         let new_prompt = self.build_effective_system_prompt()?;
+        self.replace_system_message_in_context(new_prompt);
+        Ok(())
+    }
+
+    fn replace_system_message_in_context(&mut self, new_prompt: String) {
         if let Some(first) = self.context_messages.first_mut() {
             if first.role == Role::System {
                 first.content = new_prompt;
-                return Ok(());
+                return;
             }
         }
         self.context_messages
             .insert(0, Message::new(Role::System, new_prompt));
-        Ok(())
     }
 
     fn summarize_title(first_message: &str) -> String {
-        let single_line = first_message.lines().next().unwrap_or("Nova conversa").trim();
+        let single_line = first_message
+            .lines()
+            .next()
+            .unwrap_or("Nova conversa")
+            .trim();
         let max_chars = 50;
         let char_count = single_line.chars().count();
         if char_count <= max_chars {

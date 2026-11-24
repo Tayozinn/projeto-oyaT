@@ -1,0 +1,91 @@
+[
+  {
+    "id": "self-hosting-dynamic-ip-cgnat",
+    "title": "Servidor doméstico sem IP fixo (CGNAT, DDNS, Túneis e Proxy Reverso)",
+    "tags": ["ip fixo", "ip dinamico", "servidor em casa", "minha maquina", "ddns", "cgnat", "cloudflare tunnel", "tailscale", "wireguard", "nginx", "caddy", "https"],
+    "summary": "Guia técnico para expor serviços em máquina doméstica sem IPv4 fixo sem depender de scripts remotos via pipe.",
+    "guidance": [
+      "1. Verificar primeiro se a conexão está atrás de CGNAT: comparar o IP WAN exibido no roteador com o IP público visto externamente (ex.: `curl -4 ifconfig.me`). Em CGNAT, port forwarding e DDNS IPv4 sozinhos não funcionam.",
+      "2. Alternativas modernas quando há CGNAT ou sem IP fixo: (a) Cloudflare Tunnel (`cloudflared`) via pacote oficial do repositório (nunca `curl ... | bash`) para HTTP/HTTPS sem abrir portas no roteador; (b) Tailscale/WireGuard em VPS barata como gateway reverso para serviços privados ou TCP/UDP.",
+      "3. Quando há IPv4 público dinâmico (sem CGNAT): usar `ddclient` instalado via `apt`/`dnf` (nunca scripts `install.sh` inventados) + Port Forwarding apenas das portas necessárias (80/443) no roteador.",
+      "4. Segurança obrigatória: colocar Proxy Reverso (Nginx ou Caddy com TLS automático via Let's Encrypt), habilitar firewall (`ufw`/`nftables`) com política default deny, usar chave SSH (desabilitar senha/root login) e manter backups 3-2-1."
+    ]
+  },
+  {
+    "id": "linux-disk-inodes-logs",
+    "title": "Diagnóstico de disco cheio, inodes esgotados e rotação de logs",
+    "tags": ["disco cheio", "espaco em disco", "inode", "inodes", "var/log", "logrotate", "du", "df", "lsof"],
+    "summary": "Inspeção somente leitura antes de qualquer limpeza, evitando `rm -rf` ou `find -delete` cego.",
+    "guidance": [
+      "1. Inspecionar espaço e inodes em modo somente leitura: `df -hT`, `df -i` e `sudo du -xhd 2 /var | sort -h`.",
+      "2. Verificar arquivos grandes ainda abertos por processos deletados: `sudo lsof +L1` (o espaço só é liberado ao reiniciar/recarregar o serviço dono do descritor).",
+      "3. Nunca sugerir `rm -rf /var/*`, `rm -rf /var/log/*` ou `find ... -delete` sem inspeção prévia. Configurar `logrotate` (com `compress`, `rotate`, `copytruncate` ou sinal `postrotate`) e `journalctl --vacuum-size=500M` após revisar."
+    ]
+  },
+  {
+    "id": "linux-ports-networking-firewall",
+    "title": "Portas em uso, Proxy Reverso, 502 Bad Gateway e Firewall",
+    "tags": ["porta 80", "porta 443", "8080", "502", "bad gateway", "nginx", "ss", "ufw", "nftables", "firewall"],
+    "summary": "Comandos de diagnóstico de rede e sockets sem presumir stack sem evidência.",
+    "guidance": [
+      "1. Mapear processos escutando em sockets: `sudo ss -tulpn`.",
+      "2. Em erros 502 Bad Gateway, inspecionar `/var/log/nginx/error.log` e confirmar se o upstream (socket Unix ou `127.0.0.1:PORTA`) está ativo via `systemctl status` e `ss -lpn`.",
+      "3. Revisar regras de firewall (`sudo ufw status verbose` ou `sudo nft list ruleset`) antes de alterar permissões."
+    ]
+  },
+  {
+    "id": "linux-systemd-services-hardening",
+    "title": "Systemd: Services, Timers, Journalctl e Hardening",
+    "tags": ["systemd", "service", "timer", "unit", "journalctl", "user=root", "hardening"],
+    "summary": "Boas práticas de unidades systemd e coleta de logs.",
+    "guidance": [
+      "1. Coletar evidências somente leitura com `systemctl status <servico> --no-pager` e `journalctl -u <servico> -n 100 --no-pager`.",
+      "2. Evitar `User=root` em serviços de aplicação: criar usuário dedicado sem login (`User=appworker`) e aplicar `NoNewPrivileges=yes`, `PrivateTmp=yes` e `ProtectSystem=strict` quando compatível.",
+      "3. Validar configuração antes de recarregar (`systemd-analyze verify <unit>`, `nginx -t`) e recomendar revisão manual e backup."
+    ]
+  },
+  {
+    "id": "linux-oom-memory-containers",
+    "title": "OOM Killer, Memória RAM, Swap e Contêineres",
+    "tags": ["oom", "out of memory", "oom-killer", "memoria", "ram", "swap", "java", "docker", "memorymax"],
+    "summary": "Investigação de encerramento por falta de memória.",
+    "guidance": [
+      "1. Confirmar eventos no kernel: `sudo dmesg -T | grep -i -E 'oom|killed process'` e `journalctl -k -g 'Out of memory'`.",
+      "2. Avaliar consumo atual (`free -h`, `ps aux --sort=-%mem | head`) e limites de cgroup/Docker (`docker stats --no-stream`, `MemoryMax=` no systemd).",
+      "3. Ajustar heap/limites (ex.: `-Xmx` na JVM ou `mem_limit` no container) antes de simplesmente adicionar swap."
+    ]
+  },
+  {
+    "id": "databases-auth-credentials-backup",
+    "title": "PostgreSQL e MySQL: Autenticação, Credenciais Seguras e Backup",
+    "tags": ["postgresql", "postgres", "mysql", "mariadb", "pg_hba", "my.cnf", "senha", "credencial", "backup", "mysqldump", "pg_dump"],
+    "summary": "Diagnóstico de falhas de login e proteção contra vazamento de senhas em CLI.",
+    "guidance": [
+      "1. Nunca repetir senhas literais em comandos CLI (`mysql -pSENHA`). Usar `~/.my.cnf` ou `~/.pgpass` com permissão `chmod 600` e rotacionar qualquer credencial que tenha aparecido em logs.",
+      "2. No PostgreSQL, verificar método em `pg_hba.conf` (`scram-sha-256` vs `md5`/`peer`) e logs em `/var/log/postgresql/`.",
+      "3. No MySQL/MariaDB, consultar `SELECT user, host, plugin FROM mysql.user;` (nunca inventar colunas como `privileges`) e fazer backup lógico antes de alterações (`mysqldump --single-transaction -u <user> -p <db> > backup.sql`)."
+    ]
+  },
+  {
+    "id": "security-ssh-hardening-triage",
+    "title": "Triagem de Brute Force SSH e Hardening",
+    "tags": ["ssh", "sshd", "brute force", "auth.log", "fail2ban", "chave ssh", "autenticacao"],
+    "summary": "Resposta a falhas repetidas de login SSH.",
+    "guidance": [
+      "1. Inspecionar tentativas recentes em `/var/log/auth.log` ou `journalctl -u ssh -n 200 --no-pager`.",
+      "2. Priorizar autenticação por chave Ed25519, desabilitar `PasswordAuthentication no` e `PermitRootLogin no` em `/etc/ssh/sshd_config` (sempre validando com `sudo sshd -t` antes de reiniciar e mantendo sessão ativa de fallback).",
+      "3. Aplicar proteção contra força bruta (`fail2ban` ou rate-limit no firewall)."
+    ]
+  },
+  {
+    "id": "scope-realtime-and-non-infra",
+    "title": "Limites Consultivos: Tempo Real, Internet e Escopo Técnico",
+    "tags": ["tempo real", "agora", "hoje", "atualmente", "ultimos dias", "noticias", "navegador", "pesquisa", "portugues", "gramatica", "ortografia", "sintaxe", "redacao", "marketing", "vendas"],
+    "summary": "Diretriz de honestidade sobre falta de internet/tempo real e foco exclusivo em infraestrutura/sistemas.",
+    "guidance": [
+      "1. Sem acesso à internet, navegador ou dados em tempo real: admitir explicitamente que não há acesso a notícias recentes, status ao vivo ou navegação web — nunca responder como se soubesse eventos atuais.",
+      "2. Fora de escopo (língua portuguesa/gramática, vendas, marketing, receitas): recusar de forma educada e direta, sem gerar o conteúdo fora de escopo, e redirecionar para temas de servidores, redes, logs e sistemas.",
+      "3. Nunca inventar URLs, scripts de instalação (`install.sh`) ou flags de CLI não verificadas."
+    ]
+  }
+]

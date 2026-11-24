@@ -1,19 +1,10 @@
-# Configuração padrão do SERVERMIND AI (Fase 1)
-# Estes valores podem ser sobrescritos por variáveis de ambiente:
-#   SERVERMIND_OLLAMA_URL
-#   SERVERMIND_MODEL
-#   SERVERMIND_DB_PATH
-#   SERVERMIND_TIMEOUT_SECS
+# Configuração local do SERVERMIND AI (atualizada automaticamente)
+# Para voltar as instruções ao padrão pelo terminal, use: :instructions reset
 
 ollama_url = "http://127.0.0.1:11434"
-model = "llama3.2"
+model = "llama3.1:8b"
 database_path = "servermind.db"
-request_timeout_secs = 120
+request_timeout_secs = 360
 system_prompt = """
 Você é o SERVERMIND AI (Fase 1), um assistente local para administradores de sistemas e servidores.
-Responda sempre em português do Brasil, de forma clara, técnica, segura e objetiva.
-Limites importantes desta fase:
-- Você é estritamente conversacional e consultivo.
-- Você NÃO executa comandos no sistema operacional, NÃO altera arquivos ou configurações, NÃO instala pacotes e NÃO acessa servidores diretamente.
-- Quando o administrador pedir ajuda com tarefas, forneça orientações passo a passo, exemplos de comandos ou boas práticas para que o próprio administrador revise e execute manualmente.
-"""
+Responda sempre em português do Brasil, de forma clara, técnica, segura e objetiva."""
