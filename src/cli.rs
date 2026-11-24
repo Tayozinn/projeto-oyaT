@@ -739,6 +739,18 @@ pub fn print_top_level_usage<W: Write>(out: &mut W) {
         out,
         "  servermind-ai eval --help        Executa e gerencia avaliações offline reproduzíveis (sem tocar em servermind.db)"
     );
+    let _ = writeln!(
+        out,
+        "  servermind-ai train-neural       Treina o modelo neural próprio (--dataset, --corpus-dir, --resume, --lr)"
+    );
+    let _ = writeln!(
+        out,
+        "  servermind-ai eval-neural        Avalia um checkpoint neural próprio em 6 domínios técnicos"
+    );
+    let _ = writeln!(
+        out,
+        "  servermind-ai hw                 Inspeciona hardware local e benchmark de CPU"
+    );
     let _ = writeln!(out, "  servermind-ai --help             Exibe esta ajuda");
 }
 
@@ -1964,7 +1976,9 @@ fn load_seed_corpus(dataset_path: &std::path::Path) -> Result<Vec<String>, Strin
 }
 
 pub fn run_train_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
-    let mut dataset_path = PathBuf::from("datasets/servermind_seed_v1.jsonl");
+    let mut dataset_path: Option<PathBuf> = None;
+    let mut corpus_dirs: Vec<PathBuf> = Vec::new();
+    let mut chunk_chars: usize = 1200;
     let mut out_dir = PathBuf::from("checkpoints/servermind-neural-v1");
     let mut run_name: Option<String> = None;
     let mut resume = false;
@@ -2008,8 +2022,35 @@ pub fn run_train_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--help" | "-h" => {
+                let _ = writeln!(out, "Uso: servermind-ai train-neural [opções]");
+                let _ = writeln!(out, "  --dataset <arquivo.jsonl>   Corpus Q&A em JSONL (padrão se --corpus-dir não for informado)");
+                let _ = writeln!(out, "  --corpus-dir <pasta>        Diretório recursivo de texto/código para pré-treino (repetível)");
+                let _ = writeln!(out, "  --chunk-chars <N>           Tamanho máximo de bloco por arquivo de corpus (padrão: 1200)");
+                let _ = writeln!(out, "  --out <pasta>               Diretório de saída dos checkpoints (padrão: checkpoints/servermind-neural-v1)");
+                let _ = writeln!(out, "  --run-name <nome>           Nome da execução nos relatórios");
+                let _ = writeln!(out, "  --resume                    Retoma latest.bin e tokenizer.json existentes em --out");
+                let _ = writeln!(out, "  --steps <N>                 Número alvo de passos (padrão: 80)");
+                let _ = writeln!(out, "  --d-model <N> --layers <N> --heads <N> --ff <N> --seq-len <N> --vocab <N> --batch-size <N>");
+                let _ = writeln!(out, "  --lr <f32> --min-lr <f32>   Taxa de aprendizado inicial e mínima (cosine decay)");
+                return 0;
+            }
             "--dataset" if i + 1 < args.len() => {
-                dataset_path = PathBuf::from(&args[i + 1]);
+                dataset_path = Some(PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
+            "--corpus-dir" if i + 1 < args.len() => {
+                corpus_dirs.push(PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
+            "--chunk-chars" if i + 1 < args.len() => {
+                match parse_pos_usize("--chunk-chars", &args[i + 1]) {
+                    Ok(v) => chunk_chars = v,
+                    Err(e) => {
+                        let _ = writeln!(err, "{}", e);
+                        return 2;
+                    }
+                }
                 i += 2;
             }
             "--out" if i + 1 < args.len() => {
@@ -2131,13 +2172,39 @@ pub fn run_train_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn 
         }
     }
 
-    let examples = match load_seed_corpus(&dataset_path) {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = writeln!(err, "{}", e);
-            return 1;
+    let mut examples = Vec::new();
+    for dir in &corpus_dirs {
+        match crate::tokenizer::load_corpus_directory(dir, chunk_chars) {
+            Ok(mut chunks) => examples.append(&mut chunks),
+            Err(e) => {
+                let _ = writeln!(err, "{}", e);
+                return 1;
+            }
         }
+    }
+
+    let effective_dataset = if let Some(ref ds) = dataset_path {
+        Some(ds.clone())
+    } else if corpus_dirs.is_empty() {
+        Some(PathBuf::from("datasets/servermind_seed_v1.jsonl"))
+    } else {
+        None
     };
+
+    if let Some(ds_path) = effective_dataset {
+        match load_seed_corpus(&ds_path) {
+            Ok(mut ds_examples) => examples.append(&mut ds_examples),
+            Err(e) => {
+                let _ = writeln!(err, "{}", e);
+                return 1;
+            }
+        }
+    }
+
+    if examples.is_empty() {
+        let _ = writeln!(err, "Nenhum exemplo válido carregado para treinamento.");
+        return 1;
+    }
 
     let resolved_run_name = run_name.unwrap_or_else(|| {
         out_dir
