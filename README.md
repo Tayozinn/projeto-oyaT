@@ -1,26 +1,26 @@
 # ServerMind AI
 
-**SERVERMIND AI — Assistente Conversacional Local (Fase 0)**
+**SERVERMIND AI — Assistente Conversacional e Motor Neural Próprio em Rust**
 
-O ServerMind AI é um assistente conversacional local escrito em Rust para apoiar administradores de sistemas e servidores. Nesta etapa, ele se concentra na base local com Ollama e SQLite: conversar com um modelo instalado na própria máquina, manter histórico persistido e controlar instruções e memórias explícitas de forma segura.
+O ServerMind AI é um assistente conversacional local e plataforma de IA escrito em **Rust puro** para apoiar administradores de sistemas, engenheiros de software e operadores de servidores. Ele opera como uma plataforma híbrida: conta com o **ServerMind Neural** (um Transformer Decoder-only com tokenizer BPE próprio treinado do zero, aceleração CPU `AVX2+FMA` / GPU Vulkan Compute e quantização `SMQ1`) e mantém o cliente **Ollama** como fallback configurável local.
 
-O projeto é **estritamente consultivo**: ele ainda não administra servidores, não executa comandos no sistema operacional, não altera arquivos do sistema e não acessa redes externas. Ele ajuda a tirar dúvidas, analisar cenários e estruturar comandos para que o próprio administrador revise e execute manualmente.
+O projeto é **estritamente consultivo**: ele não executa comandos no sistema operacional, não altera arquivos do sistema, não acessa redes externas e não atualiza pesos automaticamente durante conversas. Ele ajuda a diagnosticar cenários, revisar logs e estruturar comandos seguros para que o próprio administrador revise e execute manualmente.
 
 ## O que já funciona
 
-- Conversa local com modelos servidos pelo [Ollama](https://ollama.com/) via loopback (`127.0.0.1`, `localhost` ou `[::1]`).
-- Seleção entre os modelos já instalados localmente, sem downloads automáticos.
-- Histórico de conversas persistido em SQLite, podendo reabrir conversas anteriores ou iniciar novas conversas isoladas.
-- Instruções personalizadas (até 2.000 caracteres), sempre combinadas com a identidade de criação (**TayoX**) e as diretrizes imutáveis de segurança.
-- Memórias explícitas, registradas apenas sob demanda com `:remember`.
-- Consulta ao banco SQLite em modo somente leitura via `abrir-sqlite.py`.
+- **Motor Neural Próprio (`ServerMind Neural`)**: Transformer Decoder-only em Rust puro (zero dependências externas de ML), tokenizer BPE byte-level próprio, inferência com KV Cache (`fp32`/`fp16`/`int8`), streaming de tokens em tempo real, quantização pós-treino (`SMQ1`: `fp16`, `bf16`, `int8`, `int4`) e backend opcional de treinamento em GPU via **Vulkan Compute** (SPIR-V 1.3 nativo sem exigir Vulkan SDK).
+- **Alternância dinâmica de backend (`:backend`)**: permite alternar na mesma sessão entre o motor próprio (`:backend neural [dir]`) e modelos locais servidos pelo [Ollama](https://ollama.com/) (`:backend ollama`).
+- **Base de conhecimento local (`:kb`) e Memória em 3 Camadas (`:exp`)**: recuperação local de runbooks (`knowledge/sysadmin_kb.json`) e banco dedicado de experiências operacionais/treinamento (`ExperienceStore`) com gate de validação contra credenciais, comandos destrutivos e *prompt injection*.
+- **Conversa com Ollama local (fallback)**: restrito a loopback (`127.0.0.1`, `localhost` ou `[::1]`), com streaming NDJSON e seleção entre modelos instalados sem downloads automáticos.
+- **Histórico e contexto em SQLite**: reabertura de conversas anteriores (`:history`, `:load`), conversas isoladas (`:new`), instruções personalizadas (até 2.000 caracteres, preservando sempre a identidade de criação **TayoX** e as travas imutáveis de segurança) e memórias explícitas (`:remember`).
+- **Consulta somente leitura**: inspeção segura do banco SQLite via `abrir-sqlite.py`.
 
 ## Pré-requisitos
 
-- **Windows com PowerShell** (os comandos deste guia usam PowerShell).
+- **Windows com PowerShell** ou **Linux** (os exemplos deste guia usam PowerShell).
 - **[Rust e Cargo](https://www.rust-lang.org/tools/install)** instalados.
-- **[Ollama](https://ollama.com/)** instalado e em execução local.
-- **Pelo menos um modelo instalado no Ollama** (o ServerMind não baixa modelos automaticamente).
+- **Para usar o ServerMind Neural (`:backend neural`)**: apenas o binário compilado e um diretório de checkpoint treinado (como `checkpoints/servermind-neural-v3`, `v2` ou `v1`) — **não exige Ollama rodando nem GPU dedicada**.
+- **Para usar o backend padrão Ollama *(opcional se usar apenas o neural)***: **[Ollama](https://ollama.com/)** instalado, em execução local e com pelo menos um modelo instalado (o ServerMind não baixa modelos automaticamente).
 - **Python 3** *(opcional)* — necessário apenas se você quiser usar o script `abrir-sqlite.py` para inspecionar o banco em modo somente leitura.
 
 Para baixar um modelo pequeno de exemplo pelo Ollama:
@@ -64,16 +64,70 @@ Também é possível executar o binário compilado diretamente (por exemplo, `.\
 
 > **Observação:** na primeira compilação em uma máquina limpa, o Cargo precisará baixar as dependências listadas em `Cargo.toml` / `Cargo.lock`.
 
+## Como usar o ServerMind Neural (ao invés do Llama / Ollama)
+
+Por padrão, ao iniciar o chat interativo (`cargo run --release`), a sessão inicia apontando para o backend `ollama`. Para fazer o **ServerMind Neural** responder diretamente usando os checkpoints próprios do projeto (sem chamar o Ollama), use o comando `:backend` (ou `/backend`) dentro do chat:
+
+```text
+# Carrega o checkpoint v3 (ou outro diretório que contenha tokenizer.json + best.bin / quantized.smq / latest.bin)
+:backend neural checkpoints/servermind-neural-v3
+
+# Outras opções disponíveis:
+:backend neural checkpoints/servermind-neural-v2
+:backend neural                                  # usa checkpoints/servermind-neural-v1 por padrão
+
+# Consultar qual backend está ativo no momento:
+:backend
+
+# Voltar a responder pelo modelo do Ollama (ex.: Llama) na mesma sessão:
+:backend ollama
+```
+
+> **Observações importantes:**
+> 1. **Escolha por sessão:** a troca via `:backend neural ...` vale para a sessão aberta (ao reiniciar o programa, ele volta a iniciar em `ollama`).
+> 2. **Rótulo do prompt:** mesmo após ativar `:backend neural`, o prompt do terminal (`[Conversa #X | <modelo>] Administrador >`) continua exibindo o nome configurado em `model` do `config.toml`, mas toda a geração e o streaming passam a ser processados 100% pelo motor `ServerMindNeural`.
+
+### Treinamento, Quantização e Avaliação do Motor Próprio (CLI)
+
+Para máximo desempenho em CPU (`AVX2+FMA`) ou GPU (`Vulkan`), execute sempre compilado em `--release`:
+
+```powershell
+# Compilar em modo release
+cargo build --release --locked
+
+# Inspecionar hardware, suporte Vulkan/ROCm, estimativa de memória e benchmark CPU/GPU
+.\target\release\servermind-ai.exe hw
+
+# Treinar um modelo ServerMind Neural do zero (ou combinar --corpus-dir e --dataset, ou retomar com --resume)
+.\target\release\servermind-ai.exe train-neural `
+  --dataset datasets/servermind_corpus_v2.jsonl `
+  --out checkpoints/servermind-neural-v2 `
+  --steps 180 --d-model 192 --layers 3 --heads 6 --ff 512 --seq-len 96 --vocab 1024 `
+  --lr 0.002 --min-lr 0.0002 --device auto
+
+# Avaliar métricas (val_loss, perplexidade, latência, recall técnico) ou exportar pacote quantizado SMQ1
+.\target\release\servermind-ai.exe eval-neural --dir checkpoints/servermind-neural-v3
+.\target\release\servermind-ai.exe eval-neural --dir checkpoints/servermind-neural-v2 --quantize-out checkpoints/servermind-neural-v2-int8 --bits int8 --kv-cache fp16
+```
+
+Consulte todas as flags disponíveis com `.\target\release\servermind-ai.exe train-neural --help` e `eval-neural --help`, além dos guias detalhados em [`docs/architecture.md`](docs/architecture.md) e [`docs/training.md`](docs/training.md).
+
 ## Comandos disponíveis no chat
 
-Os comandos começam com `:` (a maioria também aceita `/` como prefixo alternativo).
+Os comandos começam com `:` (todos também aceitam `/` como prefixo alternativo).
 
 | Comando | Para que serve |
 | --- | --- |
-| `:help` | Mostra a lista de comandos. |
-| `:status` | Verifica a conexão com o Ollama local e a disponibilidade do modelo ativo. |
-| `:models` | Lista os modelos instalados e permite escolher um. |
-| `:model <nome ou número>` | Troca para um modelo instalado e persiste a escolha. |
+| `:help` | Mostra a lista completa de comandos. |
+| `:backend [ollama \| neural [dir]]` | Consulta o backend ativo ou alterna entre Ollama e o **ServerMind Neural** próprio. |
+| `:hw` | Inspeciona hardware local, suporte Vulkan/VRAM e benchmark de MatMul. |
+| `:train [steps]` | Treina um checkpoint experimental do ServerMind Neural do zero (padrão: `60` passos). |
+| `:quantize <src> <dst> [fp16\|bf16\|int8\|int4]` | Exporta um checkpoint FP32 para pacote quantizado compacto `SMQ1` (`quantized.smq` + `tokenizer.json`). |
+| `:kb [consulta]` | Lista todos os runbooks da base técnica local (`knowledge/sysadmin_kb.json`) ou busca por relevância. |
+| `:exp [stats \| list \| op \| add \| export]` | Gerencia a Memória em 3 Camadas (`servermind_experiences.db`) e exporta exemplos aprovados em JSONL. |
+| `:status` | Verifica a conexão com o Ollama local e a disponibilidade do modelo configurado. |
+| `:models` | Lista os modelos instalados no Ollama e permite escolher um interativamente. |
+| `:model <nome ou número>` | Troca para um modelo instalado no Ollama e persiste a escolha. |
 | `:history` | Mostra conversas salvas e permite reabrir uma. |
 | `:history <id>` ou `:load <id>` | Abre uma conversa existente pelo ID. |
 | `:new` | Começa uma nova conversa sem apagar as anteriores. |
@@ -83,7 +137,7 @@ Os comandos começam com `:` (a maioria também aceita `/` como prefixo alternat
 | `:instructions edit` | Abre edição interativa das instruções. |
 | `:instructions reset` | Restaura as instruções padrão. |
 | `:remember <texto>` | Salva uma memória explicitamente no SQLite. |
-| `:memories` | Lista as memórias salvas. |
+| `:memories` | Lista as memórias salvas (ou adiciona via `:memories add <texto>`). |
 | `:forget <id>` | Apaga uma memória pelo ID. |
 | `:quit` | Encerra o programa. |
 
@@ -228,9 +282,10 @@ request_timeout_secs = 120
 
 - **Sem execução de comandos**: o assistente é exclusivamente conversacional/consultivo.
 - **Sem edição automática do sistema ou acesso remoto**: nenhuma alteração em arquivos do servidor ou conexões SSH/remotas é feita pelo programa.
-- **Sem download automático de modelos**: depende dos modelos já instalados no Ollama local.
-- **Sem streaming de resposta ou interface gráfica**: interação síncrona via terminal (CLI).
-- **Memórias apenas explícitas**: nada é salvo como memória permanente sem `:remember`.
+- **Sem download automático de modelos**: o fallback Ollama depende dos modelos já instalados localmente, e o motor próprio usa checkpoints locais em `checkpoints/`.
+- **Sem aprendizado contínuo automático por mensagem**: os pesos do ServerMind Neural nunca são alterados durante o chat; o treinamento ocorre apenas em ciclos explícitos (`train-neural` / `:train`) com gate de validação.
+- **Interface apenas em terminal (CLI)**: streaming de resposta em tempo real no terminal, sem interface gráfica (GUI/Web).
+- **Memórias apenas explícitas**: nada é salvo como memória permanente na conversa sem `:remember` (ou `:exp` para o banco de experiências).
 - **Sem migração automática de bancos**: bancos criados anteriormente em outros diretórios permanecem onde foram gravados até que você os aponte manualmente.
 
 ## Avaliação automatizada de respostas (Fase 1 — CLI offline e reprodutível)
@@ -339,18 +394,25 @@ Consulte o guia completo e as regras do schema `1.0` em [`eval/README.md`](eval/
 
 ## Estrutura do projeto
 
-- `src/main.rs`: roteamento CLI (`eval ...` isolado antes do SQLite), inicialização do chat e testes integrados offline.
-- `src/cli.rs`: comandos do subcomando `eval` e interface interativa de terminal.
-- `src/agent.rs`: coordenação de sessão, contexto, instruções e memórias explícitas.
-- `src/ollama.rs`: cliente HTTP síncrono local para a API do Ollama (`/api/tags` e `/api/chat`).
-- `src/storage.rs`: validação de caminho/permissões e persistência SQLite.
+- `src/main.rs`: roteamento CLI (`eval`, `train-neural`, `eval-neural`, `hw`, `--help`), inicialização do chat e testes integrados offline.
+- `src/cli.rs`: interface interativa de terminal, comandos `:backend` / `:train` / `:quantize` / `:kb` / `:exp` / `:hw` e subcomandos CLI.
+- `src/inference/mod.rs`: `InferenceRouter` e `NeuralEngine` unificando `Ollama` (fallback) e `ServerMindNeural` com streaming e KV Cache configurável.
+- `src/neural/`: Transformer Decoder-only em Rust puro (`mod.rs`), kernels CPU `AVX2+FMA` (`ops.rs`), quantização `SMQ1` `FP16`/`BF16`/`INT8`/`INT4` (`quant.rs`) e backend GPU Vulkan Compute + gerador SPIR-V 1.3 (`gpu.rs`, `spirv.rs`).
+- `src/tokenizer/mod.rs`: tokenizer BPE byte-level próprio, normalização e divisão determinística de datasets.
+- `src/training/mod.rs`: pipeline de treinamento (`Trainer`, warmup + cosine decay, empacotamento de sequências, retomada de checkpoints e `metrics.jsonl`).
+- `src/experience/mod.rs`: Memória em 3 Camadas (`ExperienceStore` SQLite) com gate de validação para exemplos de treinamento.
+- `src/evaluation/mod.rs`: suíte técnica do `eval-neural` em 6 domínios (`linux`, `docker`, `network`, `security`, `debugging`, `programming`).
+- `src/infrastructure/mod.rs`: sondagem de hardware, estimativa de RAM/VRAM e benchmarks de MatMul CPU/GPU.
+- `src/knowledge.rs` e `knowledge/sysadmin_kb.json`: base de conhecimento local (runbooks de diagnóstico) injetada como grounding seguro.
+- `src/guardrails.rs`: guardrails determinísticos locais de segurança, sanitização e redação de credenciais.
+- `src/agent.rs`: coordenação de sessão, janela deslizante de contexto, instruções personalizadas e memórias explícitas.
+- `src/ollama.rs`: cliente HTTP local (com streaming NDJSON) para a API do Ollama (`/api/tags` e `/api/chat`).
+- `src/storage.rs`: validação de caminho/permissões e persistência SQLite (`servermind.db`).
 - `src/config.rs`: carregamento determinístico de configuração, validação de URL local e gravação segura de `config.toml`.
 - `src/models.rs`: estruturas de dados compartilhadas.
-- `src/eval_dataset.rs`: carregamento, validação estrita, hash SHA-256 e filtragem do dataset `eval/cases_v1.json`.
-- `src/eval_metrics.rs`: rubrica `0–2` (6 dimensões), avaliação determinística e suporte opcional ao juiz local (estimativa).
-- `src/eval_report.rs`: agregação, utilitários UTC puros, renderização JSON/Markdown e gravação anti-sobrescrita em `eval_reports/`.
-- `src/eval_runner.rs`: executor sequencial (`concurrency = 1`), isolamento de prompt, duração máxima, `Ctrl+C` e detecção de falhas globais.
-- `eval/cases_v1.json` e `eval/README.md`: conjunto versionado de casos fictícios PT-BR e guia de extensão.
+- `src/eval_dataset.rs`, `src/eval_metrics.rs`, `src/eval_report.rs`, `src/eval_runner.rs`: motor de avaliação reproduzível da Fase 1 (`eval/cases_v1.json`).
+- `datasets/` e `checkpoints/`: corpora JSONL/pré-treino e artefatos treinados do `ServerMind Neural` (`v1`, `v2`, `v3`).
+- `docs/`: documentação arquitetural detalhada (`architecture.md`, `training.md`, `HANDOFF.md` e especificações `SM-001`..`SM-007`).
 - `abrir-sqlite.py`: utilitário Python para consulta SQL somente leitura.
 
 ## Resumo das alterações da Fase 0

@@ -33,6 +33,8 @@ pub struct BpeTokenizer {
     pub merges: Vec<(String, String)>,
     #[serde(skip)]
     token_to_id: HashMap<String, usize>,
+    #[serde(skip)]
+    merge_ranks: HashMap<(String, String), (usize, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,14 +66,17 @@ impl BpeTokenizer {
             }
         }
 
-        // Pré-tokenização em palavras/espaços para aprender merges frequentes dentro de palavras.
+        // Pré-tokenização em palavras/espaços isolando SPECIAL_TOKENS para não desperdiçar merges
+        // fundindo `<user>`, `<assistant>`, `<system>`, etc.
         let mut word_freqs: HashMap<Vec<String>, usize> = HashMap::new();
         for text in texts {
             let cleaned = normalize_corpus_text(text);
-            for piece in pretokenize(&cleaned) {
-                let seq: Vec<String> = piece.as_bytes().iter().map(|&b| byte_token(b)).collect();
-                if !seq.is_empty() {
-                    *word_freqs.entry(seq).or_insert(0) += 1;
+            for segment in split_non_special_segments(&cleaned) {
+                for piece in pretokenize(segment) {
+                    let seq: Vec<String> = piece.as_bytes().iter().map(|&b| byte_token(b)).collect();
+                    if !seq.is_empty() {
+                        *word_freqs.entry(seq).or_insert(0) += 1;
+                    }
                 }
             }
         }
@@ -105,20 +110,22 @@ impl BpeTokenizer {
             }
             merges.push((a.clone(), b.clone()));
 
-            // Aplica o merge em todas as palavras do corpus de treino.
+            // Aplica o merge apenas nas sequências que contêm o par adjacente `(a, b)`.
             let mut next_freqs: HashMap<Vec<String>, usize> =
                 HashMap::with_capacity(word_freqs.len());
-            for (seq, freq) in word_freqs {
-                let new_seq = merge_pair_in_seq(&seq, &a, &b, &merged);
-                *next_freqs.entry(new_seq).or_insert(0) += freq;
+            for (mut seq, freq) in word_freqs {
+                merge_pair_in_place(&mut seq, &a, &b, Some(&merged));
+                *next_freqs.entry(seq).or_insert(0) += freq;
             }
             word_freqs = next_freqs;
         }
 
+        let merge_ranks = build_merge_ranks(&merges);
         Self {
             vocab,
             merges,
             token_to_id,
+            merge_ranks,
         }
     }
 
@@ -143,31 +150,62 @@ impl BpeTokenizer {
     }
 
     /// Codifica um texto em IDs de tokens usando os merges aprendidos e preservando tokens especiais.
+    /// Normaliza `\r\n` para `\n` e evita alocações em merges que não ocorrem na palavra.
     pub fn encode(&self, text: &str, add_bos: bool, add_eos: bool) -> Vec<usize> {
         let mut ids = Vec::new();
         if add_bos {
             ids.push(self.bos_id());
         }
 
+        let normalized: std::borrow::Cow<'_, str> = if text.contains("\r\n") {
+            std::borrow::Cow::Owned(text.replace("\r\n", "\n"))
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        };
+        let input = normalized.as_ref();
+
         let unk_id = self.token_id(UNK_TOKEN).unwrap_or(3);
         let mut cursor = 0usize;
-        while cursor < text.len() {
-            if let Some((special, sp_id)) = self.match_special_prefix(&text[cursor..]) {
+        while cursor < input.len() {
+            if let Some((special, sp_id)) = self.match_special_prefix(&input[cursor..]) {
                 ids.push(sp_id);
                 cursor += special.len();
                 continue;
             }
-            let next_special = find_next_special(&text[cursor..]);
-            let segment = &text[cursor..cursor + next_special];
+            let next_special = find_next_special(&input[cursor..]);
+            let segment = &input[cursor..cursor + next_special];
             for piece in pretokenize(segment) {
                 let mut seq: Vec<String> =
                     piece.as_bytes().iter().map(|&b| byte_token(b)).collect();
-                for (a, b) in &self.merges {
-                    if seq.len() < 2 {
-                        break;
+                if !self.merge_ranks.is_empty() {
+                    while seq.len() >= 2 {
+                        let mut best: Option<(usize, String, String, String)> = None;
+                        for pair in seq.windows(2) {
+                            if let Some((rank, merged)) =
+                                self.merge_ranks.get(&(pair[0].clone(), pair[1].clone()))
+                            {
+                                if best.as_ref().map_or(true, |(b_rank, _, _, _)| *rank < *b_rank) {
+                                    best = Some((
+                                        *rank,
+                                        pair[0].clone(),
+                                        pair[1].clone(),
+                                        merged.clone(),
+                                    ));
+                                }
+                            }
+                        }
+                        let Some((_, a, b, merged)) = best else {
+                            break;
+                        };
+                        merge_pair_in_place(&mut seq, &a, &b, Some(&merged));
                     }
-                    let merged = format!("{}{}", a, b);
-                    seq = merge_pair_in_seq(&seq, a, b, &merged);
+                } else {
+                    for (a, b) in &self.merges {
+                        if seq.len() < 2 {
+                            break;
+                        }
+                        merge_pair_in_place(&mut seq, a, b, None);
+                    }
                 }
                 for tok in seq {
                     ids.push(self.token_to_id.get(&tok).copied().unwrap_or(unk_id));
@@ -205,13 +243,66 @@ impl BpeTokenizer {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Falha ao criar diretório do tokenizer: {}", e))?;
-        }
+        use std::io::Write;
+        let parent = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => {
+                fs::create_dir_all(p)
+                    .map_err(|e| format!("Falha ao criar diretório do tokenizer: {}", e))?;
+                p
+            }
+            _ => Path::new("."),
+        };
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Falha ao serializar tokenizer: {}", e))?;
-        fs::write(path, json).map_err(|e| format!("Falha ao gravar tokenizer em {:?}: {}", path, e))
+
+        static TOK_ATOMIC_SEQ: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(1);
+        let seq = TOK_ATOMIC_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let fname = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("tokenizer.json");
+        let tmp_path = parent.join(format!(".{}.tmp.{}.{}", fname, std::process::id(), seq));
+
+        let write_res = (|| -> Result<(), String> {
+            let mut file = fs::File::create(&tmp_path).map_err(|e| {
+                format!(
+                    "Falha ao criar arquivo temporário do tokenizer {:?}: {}",
+                    tmp_path, e
+                )
+            })?;
+            file.write_all(json.as_bytes())
+                .map_err(|e| format!("Falha ao escrever tokenizer: {}", e))?;
+            file.flush()
+                .map_err(|e| format!("Falha no flush do tokenizer: {}", e))?;
+            file.sync_all()
+                .map_err(|e| format!("Falha no sync_all do tokenizer: {}", e))?;
+            Ok(())
+        })();
+
+        if let Err(e) = write_res {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+
+        let mut last_err = None;
+        for attempt in 0..3 {
+            match fs::rename(&tmp_path, path) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < 2 {
+                        std::thread::sleep(std::time::Duration::from_millis(15));
+                    }
+                }
+            }
+        }
+        let _ = fs::remove_file(&tmp_path);
+        Err(format!(
+            "Falha ao gravar atomicamente tokenizer em {:?}: {}",
+            path,
+            last_err.map(|e| e.to_string()).unwrap_or_default()
+        ))
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -225,6 +316,7 @@ impl BpeTokenizer {
             .enumerate()
             .map(|(i, t)| (t.clone(), i))
             .collect();
+        tok.merge_ranks = build_merge_ranks(&tok.merges);
         Ok(tok)
     }
 
@@ -243,6 +335,15 @@ impl BpeTokenizer {
 /// Normaliza espaços e quebras de linha preservando identação e comandos técnicos.
 pub fn normalize_corpus_text(text: &str) -> String {
     text.replace("\r\n", "\n").trim().to_string()
+}
+
+fn build_merge_ranks(merges: &[(String, String)]) -> HashMap<(String, String), (usize, String)> {
+    let mut map = HashMap::with_capacity(merges.len());
+    for (rank, (a, b)) in merges.iter().enumerate() {
+        map.entry((a.clone(), b.clone()))
+            .or_insert_with(|| (rank, format!("{}{}", a, b)));
+    }
+    map
 }
 
 /// Extensões de texto/código aceitas no carregamento recursivo de diretórios de pré-treino.
@@ -445,33 +546,104 @@ fn split_text_into_chunks(text: &str, max_chars: usize, out: &mut Vec<String>) {
     }
 }
 
-/// Divide exemplos limpos de forma determinística em treino, validação e teste.
+/// Divide exemplos limpos de forma determinística (com deduplicação e embaralhamento reproduzível)
+/// em treino, validação e teste. Valida que `val_ratio` e `test_ratio` deixem fração positiva de treino.
+pub fn try_split_dataset(
+    raw_examples: &[String],
+    version: &str,
+    val_ratio: f64,
+    test_ratio: f64,
+) -> Result<DatasetSplit, String> {
+    if !val_ratio.is_finite()
+        || !test_ratio.is_finite()
+        || val_ratio < 0.0
+        || test_ratio < 0.0
+        || val_ratio + test_ratio >= 1.0
+    {
+        return Err(format!(
+            "Proporções de divisão inválidas (val_ratio={}, test_ratio={}): exigido >= 0 e soma < 1.0.",
+            val_ratio, test_ratio
+        ));
+    }
+
+    let mut clean: Vec<String> = raw_examples
+        .iter()
+        .map(|s| normalize_corpus_text(s))
+        .filter(|s| !s.is_empty())
+        .collect();
+    // Deduplicação preservando ordem canônica inicial
+    let mut seen = std::collections::HashSet::new();
+    clean.retain(|item| seen.insert(item.clone()));
+
+    // Embaralhamento Fisher-Yates determinístico (SplitMix64 ancorado em `version`)
+    // para evitar que exemplos no fim da lista (ex.: `--dataset` após `--corpus-dir`)
+    // caiam 100% em validação/teste.
+    deterministic_shuffle(&mut clean, hash_version_seed(version));
+
+    let n = clean.len();
+    let mut test_count = ((n as f64) * test_ratio).round() as usize;
+    let mut val_count = ((n as f64) * val_ratio).round() as usize;
+    if n > 0 && val_count + test_count >= n {
+        // Garante ao menos 1 exemplo em `train` quando `n >= 1`
+        let max_holdout = n - 1;
+        test_count = test_count.min(max_holdout);
+        val_count = val_count.min(max_holdout - test_count);
+    }
+    let train_end = n.saturating_sub(val_count + test_count);
+    let val_end = n.saturating_sub(test_count);
+
+    Ok(DatasetSplit {
+        version: version.to_string(),
+        train: clean[..train_end].to_vec(),
+        validation: clean[train_end..val_end].to_vec(),
+        test: clean[val_end..].to_vec(),
+    })
+}
+
+/// Versão infalível de [`try_split_dataset`], limitando proporções fora de faixa de forma segura.
 pub fn split_dataset(
     raw_examples: &[String],
     version: &str,
     val_ratio: f64,
     test_ratio: f64,
 ) -> DatasetSplit {
-    let mut clean: Vec<String> = raw_examples
-        .iter()
-        .map(|s| normalize_corpus_text(s))
-        .filter(|s| !s.is_empty())
-        .collect();
-    // Deduplicação preservando ordem determinística
-    let mut seen = std::collections::HashSet::new();
-    clean.retain(|item| seen.insert(item.clone()));
-
-    let n = clean.len();
-    let test_count = ((n as f64) * test_ratio).round() as usize;
-    let val_count = ((n as f64) * val_ratio).round() as usize;
-    let train_end = n.saturating_sub(val_count + test_count);
-    let val_end = n.saturating_sub(test_count);
-
-    DatasetSplit {
+    let v = if val_ratio.is_finite() {
+        val_ratio.clamp(0.0, 0.45)
+    } else {
+        0.15
+    };
+    let t = if test_ratio.is_finite() {
+        test_ratio.clamp(0.0, 0.45)
+    } else {
+        0.10
+    };
+    try_split_dataset(raw_examples, version, v, t).unwrap_or_else(|_| DatasetSplit {
         version: version.to_string(),
-        train: clean[..train_end].to_vec(),
-        validation: clean[train_end..val_end].to_vec(),
-        test: clean[val_end..].to_vec(),
+        train: Vec::new(),
+        validation: Vec::new(),
+        test: Vec::new(),
+    })
+}
+
+fn hash_version_seed(version: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in version.as_bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h ^ 0x534D_3030_325F_5350 // "SM002_SP"
+}
+
+fn deterministic_shuffle<T>(items: &mut [T], seed: u64) {
+    let mut state = seed ^ 0x9E37_79B9_7F4A_7C15;
+    for i in (1..items.len()).rev() {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        let j = (z as usize) % (i + 1);
+        items.swap(i, j);
     }
 }
 
@@ -527,6 +699,33 @@ fn pretokenize(text: &str) -> Vec<&str> {
     out
 }
 
+fn match_special_token_prefix(slice: &str) -> Option<&'static str> {
+    for &sp in SPECIAL_TOKENS {
+        if slice.starts_with(sp) {
+            return Some(sp);
+        }
+    }
+    None
+}
+
+fn split_non_special_segments(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        if let Some(sp) = match_special_token_prefix(&text[cursor..]) {
+            cursor += sp.len();
+            continue;
+        }
+        let next_special = find_next_special(&text[cursor..]);
+        let segment = &text[cursor..cursor + next_special];
+        if !segment.is_empty() {
+            out.push(segment);
+        }
+        cursor += next_special;
+    }
+    out
+}
+
 fn find_next_special(slice: &str) -> usize {
     let mut best = slice.len();
     for &sp in SPECIAL_TOKENS {
@@ -539,19 +738,39 @@ fn find_next_special(slice: &str) -> usize {
     best
 }
 
-fn merge_pair_in_seq(seq: &[String], a: &str, b: &str, merged: &str) -> Vec<String> {
-    let mut out = Vec::with_capacity(seq.len());
-    let mut i = 0;
-    while i < seq.len() {
-        if i + 1 < seq.len() && seq[i] == a && seq[i + 1] == b {
-            out.push(merged.to_string());
-            i += 2;
+#[inline]
+fn has_adjacent_pair(seq: &[String], a: &str, b: &str) -> bool {
+    seq.windows(2).any(|w| w[0] == a && w[1] == b)
+}
+
+fn merge_pair_in_place(seq: &mut Vec<String>, a: &str, b: &str, precomputed_merged: Option<&str>) {
+    if !has_adjacent_pair(seq, a, b) {
+        return;
+    }
+    let merged_owned;
+    let merged = match precomputed_merged {
+        Some(m) => m,
+        None => {
+            merged_owned = format!("{}{}", a, b);
+            merged_owned.as_str()
+        }
+    };
+    let mut write = 0usize;
+    let mut read = 0usize;
+    while read < seq.len() {
+        if read + 1 < seq.len() && seq[read] == a && seq[read + 1] == b {
+            seq[write] = merged.to_string();
+            write += 1;
+            read += 2;
         } else {
-            out.push(seq[i].clone());
-            i += 1;
+            if write != read {
+                seq.swap(write, read);
+            }
+            write += 1;
+            read += 1;
         }
     }
-    out
+    seq.truncate(write);
 }
 
 #[cfg(test)]
@@ -652,5 +871,68 @@ mod tests {
         assert!(!chunks.iter().any(|c| c.contains("BEGIN PRIVATE KEY")));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn bpe_isolates_special_tokens_and_merge_ranks_match_sequential_merges() {
+        let corpus = [
+            "<user> diagnosticar servidor linux\r\n<assistant> execute systemctl status nginx",
+            "<user> diagnosticar servidor web\n<assistant> execute journalctl -u nginx",
+            "<user> diagnosticar portas abertas\n<assistant> execute ss -tulnp",
+        ];
+        let tok = BpeTokenizer::train_from_corpus(&corpus, 310);
+
+        // Nenhum merge deve desperdiçar vocabulário recriando `<user>` ou `<assistant>`
+        for (a, b) in &tok.merges {
+            let m = format!("{}{}", a, b);
+            assert!(
+                !m.contains("user") && !m.contains("assistant"),
+                "merge indevido de token especial encontrado: {}",
+                m
+            );
+        }
+
+        // `encode` com CRLF e LF deve ser idêntico
+        let a = tok.encode("<user> diagnosticar\r\n<assistant> execute", true, true);
+        let b = tok.encode("<user> diagnosticar\n<assistant> execute", true, true);
+        assert_eq!(a, b);
+
+        // Equivalência bit-a-bit entre `merge_ranks` O(L^2) e fallback sequencial O(|M|*L)
+        let mut tok_no_ranks = tok.clone();
+        tok_no_ranks.merge_ranks.clear();
+        let probe = "<user> diagnosticar servidor linux e portas <assistant> execute systemctl status nginx";
+        assert_eq!(
+            tok.encode(probe, true, true),
+            tok_no_ranks.encode(probe, true, true)
+        );
+    }
+
+    #[test]
+    fn split_dataset_mixes_tail_qa_into_train_and_validates_ratios() {
+        let mut combined: Vec<String> = (0..300).map(|i| format!("livro capitulo {}", i)).collect();
+        for q in 0..100 {
+            combined.push(format!("qa_item_{}", q));
+        }
+        let split = split_dataset(&combined, "v3-test", 0.15, 0.10);
+        let qa_in_train = split
+            .train
+            .iter()
+            .filter(|s| s.starts_with("qa_item_"))
+            .count();
+        // Com 75% de treino, espera-se ~75 exemplos Q&A (antes de SM-002 era 0!).
+        assert!(
+            (60..=90).contains(&qa_in_train),
+            "Q&A mal distribuído em train: {}",
+            qa_in_train
+        );
+
+        // Determinismo exato entre chamadas repetidas
+        let split2 = split_dataset(&combined, "v3-test", 0.15, 0.10);
+        assert_eq!(split.train, split2.train);
+        assert_eq!(split.validation, split2.validation);
+
+        // Validação explícita de proporções inválidas
+        assert!(super::try_split_dataset(&combined, "v3", 0.6, 0.5).is_err());
+        assert!(super::try_split_dataset(&combined, "v3", -0.1, 0.1).is_err());
     }
 }

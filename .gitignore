@@ -27,4 +27,10 @@ Thumbs.db
 /eval_reports/
 eval_reports/
 checkpoints/**/*.bin
+checkpoints/**/*.smq
+checkpoints/servermind-neural-marathon/
+checkpoints/servermind-neural-marathon-int8/
+checkpoints/servermind-neural-110m/
+checkpoints/servermind-neural-110m-int8/
 datasets/pretrain_books/
+datasets/pretrain_corpus_v2/
