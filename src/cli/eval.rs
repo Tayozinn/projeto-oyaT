@@ -87,7 +87,7 @@ fn print_eval_help<W: Write>(out: &mut W) {
     let _ = writeln!(out, "\nOpções de `eval run`:");
     let _ = writeln!(
         out,
-        "  --backend <BACKEND>      Backend alvo: ollama (padrão local), neural, claude, gemini, groq, openrouter, openai"
+        "  --backend <BACKEND>      Backend alvo: ollama (padrão local), neural, claude, gemini, groq, mistral, openrouter, openai ou free-*"
     );
     let _ = writeln!(
         out,
@@ -441,18 +441,9 @@ fn run_eval_run<W1: Write, W2: Write>(
             }
         }
         remote_kind => {
-            let preset = match remote_kind {
-                crate::chat::backend::BackendKind::Gemini => {
-                    crate::chat::backend::OpenAiProviderPreset::Gemini
-                }
-                crate::chat::backend::BackendKind::Groq => {
-                    crate::chat::backend::OpenAiProviderPreset::Groq
-                }
-                crate::chat::backend::BackendKind::OpenRouter => {
-                    crate::chat::backend::OpenAiProviderPreset::OpenRouter
-                }
-                _ => crate::chat::backend::OpenAiProviderPreset::OpenAi,
-            };
+            let (preset, preset_model) = remote_kind
+                .resolve_openai_preset_and_default_model()
+                .expect("OpenAI-compat preset kind");
             let timeout_secs = parsed
                 .timeout_secs
                 .unwrap_or(crate::chat::backend::DEFAULT_REMOTE_TIMEOUT_SECS);
@@ -464,9 +455,10 @@ fn run_eval_run<W1: Write, W2: Write>(
                         return 1;
                     }
                 };
+            let effective_model = parsed.model.as_deref().or(preset_model);
             let ob = match crate::chat::backend::OpenAiCompatBackend::from_env(
                 preset,
-                parsed.model.as_deref(),
+                effective_model,
                 limits,
             ) {
                 Ok(b) => b,

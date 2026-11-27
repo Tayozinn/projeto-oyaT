@@ -31,6 +31,8 @@ const KNOWN_TOKEN_PREFIXES: &[(&str, usize)] = &[
     ("xoxp-", 14),
     ("xoxa-", 14),
     ("gsk_", 16),
+    ("sk-or-v1-", 20),
+    ("csk-", 16),
     ("AIza", 24),
     ("AKIA", 16),
 ];
@@ -52,6 +54,7 @@ const KV_SECRET_KEYS: &[&str] = &[
     "openai_api_key",
     "gemini_api_key",
     "groq_api_key",
+    "mistral_api_key",
     "openrouter_api_key",
     "api_key",
     "apikey",

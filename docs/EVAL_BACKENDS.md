@@ -6,17 +6,31 @@ Por padrão, o binário continua **100% local e privado via `ollama`** (restrito
 
 ---
 
-## 1. Backends Suportados
+## 1. Backends Suportados e Presets Gratuitos Prontos
 
 | Backend (`--backend` / `:backend`) | Escopo | Variável de Ambiente (API Key) | Modelo Padrão | Observações |
 | --- | --- | --- | --- | --- |
 | `ollama` *(padrão)* | Local (loopback) | *(nenhuma)* | `config.toml` (`qwen2.5:14b` / `qwen2.5:3b`) | Regra estrita anti-SSRF (somente loopback). |
 | `neural` | Local (in-process) | *(nenhuma)* | `checkpoints/servermind-neural-110m-int8` | Motor próprio Rust (`FP32` ou `SMQ1 INT8`). |
 | `claude` | Remoto (HTTPS) | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` | API oficial Anthropic Messages (`/v1/messages`) + `tools` nativo. |
-| `gemini` | Remoto (HTTPS) | `GEMINI_API_KEY` | `gemini-2.5-flash` | Preset oficial Google AI Studio (**possui tier gratuito**). |
-| `groq` | Remoto (HTTPS) | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | Preset oficial Groq Cloud (**possui tier gratuito**). |
-| `openrouter` | Remoto (HTTPS) | `OPENROUTER_API_KEY` | `meta-llama/llama-3.3-70b-instruct:free` | Preset OpenRouter (**modelos `:free` disponíveis**). |
-| `openai` | Remoto (HTTPS) | `OPENAI_API_KEY` | `gpt-4o-mini` | Compatível com OpenAI `/v1/chat/completions` (customizável via `SERVERMIND_OPENAI_BASE_URL`). |
+| `gemini` | Remoto (HTTPS) | `GEMINI_API_KEY` | `gemini-flash-latest` | Google AI Studio (**possui tier gratuito sem cartão**). |
+| `groq` | Remoto (HTTPS) | `GROQ_API_KEY` | `openai/gpt-oss-120b` | Groq Cloud (**possui tier gratuito em baixa latência**). |
+| `mistral` | Remoto (HTTPS) | `MISTRAL_API_KEY` | `mistral-small-latest` | Mistral La Plateforme (**Free Mode sem cartão**). |
+| `openrouter` | Remoto (HTTPS) | `OPENROUTER_API_KEY` | `openrouter/free` | Auto-router gratuito do OpenRouter (**roteia automaticamente para `:free`**). |
+| `openai` | Remoto (HTTPS) | `OPENAI_API_KEY` | `gpt-4o-mini` | Compatível com OpenAI `/v1/chat/completions` (`SERVERMIND_OPENAI_BASE_URL`). |
+
+### Atalhos de Presets Gratuitos (`:backend presets`)
+
+Você pode listar todos os atalhos e verificar quais variáveis já estão definidas digitando `:backend presets` no REPL, ou ativar diretamente qualquer um destes aliases tanto no REPL quanto em `eval run --backend <alias>`:
+
+| Alias Pronto | Provedor | Modelo Pré-configurado | Variável de Ambiente | Onde gerar chave gratuita |
+| --- | --- | --- | --- | --- |
+| `free-gemini` | Google AI Studio | `gemini-flash-latest` | `GEMINI_API_KEY` | `https://aistudio.google.com/apikey` |
+| `free-groq` | Groq Cloud | `openai/gpt-oss-120b` | `GROQ_API_KEY` | `https://console.groq.com/keys` |
+| `free-groq-qwen` | Groq Cloud | `qwen/qwen3.8-27b` | `GROQ_API_KEY` | `https://console.groq.com/keys` |
+| `free-mistral` | Mistral | `mistral-small-latest` | `MISTRAL_API_KEY` | `https://console.mistral.ai/api-keys` |
+| `free-openrouter` | OpenRouter | `openrouter/free` | `OPENROUTER_API_KEY` | `https://openrouter.ai/keys` |
+| `free-nemotron` | OpenRouter | `nvidia/nemotron-3-ultra:free` | `OPENROUTER_API_KEY` | `https://openrouter.ai/keys` |
 
 ---
 

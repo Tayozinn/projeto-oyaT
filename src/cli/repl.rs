@@ -646,7 +646,7 @@ fn print_help(out: &mut dyn Write) {
     );
     let _ = writeln!(
         out,
-        "  :backend [ollama|neural|claude|gemini|groq|openrouter|openai] [arg] - Alterna o backend ativo"
+        "  :backend [nome|presets] [arg] - Alterna backend (ollama, neural, claude ou presets gratuitos como free-gemini/free-groq)"
     );
     let _ = writeln!(
         out,
@@ -1247,11 +1247,27 @@ fn handle_backend_command(
         );
         let _ = writeln!(
             out,
-            "Uso remoto    : :backend claude [modelo]  |  :backend gemini [modelo]  |  :backend groq [modelo]  |  :backend openrouter [modelo]  |  :backend openai [modelo]"
+            "Uso remoto    : :backend claude [modelo]  |  :backend gemini [modelo]  |  :backend groq [modelo]  |  :backend mistral [modelo]  |  :backend openrouter [modelo]  |  :backend openai [modelo]"
         );
         let _ = writeln!(
             out,
-            "Variáveis API : ANTHROPIC_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY ou SERVERMIND_OPENAI_API_KEY"
+            "Presets grátis: :backend presets  (lista atalhos prontos: free-gemini, free-groq, free-groq-qwen, free-mistral, free-openrouter, free-nemotron)"
+        );
+        let _ = writeln!(
+            out,
+            "Variáveis API : ANTHROPIC_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, OPENROUTER_API_KEY ou SERVERMIND_OPENAI_API_KEY"
+        );
+        return;
+    }
+
+    if matches!(
+        trimmed.to_ascii_lowercase().as_str(),
+        "presets" | "free" | "gratis" | "gratuitos" | "list"
+    ) {
+        let _ = writeln!(
+            out,
+            "{}",
+            crate::chat::backend::format_free_presets_catalog()
         );
         return;
     }
@@ -1315,19 +1331,11 @@ fn handle_backend_command(
             }
         },
         remote_preset_kind => {
-            let preset = match remote_preset_kind {
-                crate::chat::backend::BackendKind::Gemini => {
-                    crate::chat::backend::OpenAiProviderPreset::Gemini
-                }
-                crate::chat::backend::BackendKind::Groq => {
-                    crate::chat::backend::OpenAiProviderPreset::Groq
-                }
-                crate::chat::backend::BackendKind::OpenRouter => {
-                    crate::chat::backend::OpenAiProviderPreset::OpenRouter
-                }
-                _ => crate::chat::backend::OpenAiProviderPreset::OpenAi,
-            };
-            match session.use_openai_compat_backend(preset, opt_arg) {
+            let (preset, preset_model) = remote_preset_kind
+                .resolve_openai_preset_and_default_model()
+                .expect("OpenAI-compat preset kind");
+            let effective_model_override = opt_arg.or(preset_model);
+            match session.use_openai_compat_backend(preset, effective_model_override) {
                 Ok((endpoint, model_name, limits)) => {
                     let _ = writeln!(
                         out,

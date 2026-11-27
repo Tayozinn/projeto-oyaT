@@ -913,13 +913,14 @@ impl EvalModelClient for ClaudeBackend {
 }
 
 // ===========================================================================
-// 4. OpenAiCompatBackend (Gemini AI Studio / Groq / OpenRouter / OpenAI)
+// 4. OpenAiCompatBackend (Gemini AI Studio / Groq / Mistral / OpenRouter / OpenAI)
 // ===========================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenAiProviderPreset {
     Gemini,
     Groq,
+    Mistral,
     OpenRouter,
     OpenAi,
 }
@@ -929,6 +930,7 @@ impl OpenAiProviderPreset {
         match self {
             Self::Gemini => "gemini",
             Self::Groq => "groq",
+            Self::Mistral => "mistral",
             Self::OpenRouter => "openrouter",
             Self::OpenAi => "openai",
         }
@@ -936,8 +938,9 @@ impl OpenAiProviderPreset {
 
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::Gemini => "Google Gemini API (OpenAI-compat remoto)",
+            Self::Gemini => "Google Gemini AI Studio (OpenAI-compat remoto)",
             Self::Groq => "Groq Cloud API (OpenAI-compat remoto)",
+            Self::Mistral => "Mistral La Plateforme API (OpenAI-compat remoto)",
             Self::OpenRouter => "OpenRouter API (OpenAI-compat remoto)",
             Self::OpenAi => "OpenAI-Compatible API (remoto)",
         }
@@ -947,6 +950,7 @@ impl OpenAiProviderPreset {
         match self {
             Self::Gemini => "https://generativelanguage.googleapis.com/v1beta/openai",
             Self::Groq => "https://api.groq.com/openai/v1",
+            Self::Mistral => "https://api.mistral.ai/v1",
             Self::OpenRouter => "https://openrouter.ai/api/v1",
             Self::OpenAi => "https://api.openai.com/v1",
         }
@@ -954,9 +958,10 @@ impl OpenAiProviderPreset {
 
     pub fn default_model(self) -> &'static str {
         match self {
-            Self::Gemini => "gemini-2.5-flash",
-            Self::Groq => "llama-3.3-70b-versatile",
-            Self::OpenRouter => "qwen/qwen-2.5-coder-32b-instruct:free",
+            Self::Gemini => "gemini-flash-latest",
+            Self::Groq => "openai/gpt-oss-120b",
+            Self::Mistral => "mistral-small-latest",
+            Self::OpenRouter => "openrouter/free",
             Self::OpenAi => "gpt-4o-mini",
         }
     }
@@ -965,6 +970,7 @@ impl OpenAiProviderPreset {
         match self {
             Self::Gemini => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
             Self::Groq => &["GROQ_API_KEY"],
+            Self::Mistral => &["MISTRAL_API_KEY"],
             Self::OpenRouter => &["OPENROUTER_API_KEY"],
             Self::OpenAi => &["SERVERMIND_OPENAI_API_KEY", "OPENAI_API_KEY"],
         }
@@ -974,10 +980,112 @@ impl OpenAiProviderPreset {
         match self {
             Self::Gemini => "SERVERMIND_GEMINI_BASE_URL",
             Self::Groq => "SERVERMIND_GROQ_BASE_URL",
+            Self::Mistral => "SERVERMIND_MISTRAL_BASE_URL",
             Self::OpenRouter => "SERVERMIND_OPENROUTER_BASE_URL",
             Self::OpenAi => "SERVERMIND_OPENAI_BASE_URL",
         }
     }
+}
+
+/// Catálogo curado de presets gratuitos oficiais prontos para uso sem cartão de crédito
+/// via chave de API em variável de ambiente (`:backend presets` / `--backend <alias>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FreeBackendPresetInfo {
+    pub alias: &'static str,
+    pub provider: OpenAiProviderPreset,
+    pub model: &'static str,
+    pub env_var: &'static str,
+    pub signup_hint: &'static str,
+    pub summary: &'static str,
+}
+
+pub const FREE_BACKEND_PRESETS: &[FreeBackendPresetInfo] = &[
+    FreeBackendPresetInfo {
+        alias: "free-gemini",
+        provider: OpenAiProviderPreset::Gemini,
+        model: "gemini-flash-latest",
+        env_var: "GEMINI_API_KEY",
+        signup_hint: "aistudio.google.com/apikey",
+        summary: "Google AI Studio Flash mais recente (ótimo equilíbrio e janela ampla)",
+    },
+    FreeBackendPresetInfo {
+        alias: "free-groq",
+        provider: OpenAiProviderPreset::Groq,
+        model: "openai/gpt-oss-120b",
+        env_var: "GROQ_API_KEY",
+        signup_hint: "console.groq.com/keys",
+        summary: "Groq GPT-OSS 120B em baixa latência (raciocínio forte para infra e código)",
+    },
+    FreeBackendPresetInfo {
+        alias: "free-groq-qwen",
+        provider: OpenAiProviderPreset::Groq,
+        model: "qwen/qwen3.8-27b",
+        env_var: "GROQ_API_KEY",
+        signup_hint: "console.groq.com/keys",
+        summary: "Groq Qwen 3.8 27B (excelente aderência a instruções técnicas e scripts)",
+    },
+    FreeBackendPresetInfo {
+        alias: "free-mistral",
+        provider: OpenAiProviderPreset::Mistral,
+        model: "mistral-small-latest",
+        env_var: "MISTRAL_API_KEY",
+        signup_hint: "console.mistral.ai/api-keys",
+        summary: "Mistral Free Mode (sem cartão; rápido para diagnóstico Linux e YAML/Bash)",
+    },
+    FreeBackendPresetInfo {
+        alias: "free-openrouter",
+        provider: OpenAiProviderPreset::OpenRouter,
+        model: "openrouter/free",
+        env_var: "OPENROUTER_API_KEY",
+        signup_hint: "openrouter.ai/keys",
+        summary:
+            "Auto-router gratuito do OpenRouter (escolhe automaticamente um modelo :free ativo)",
+    },
+    FreeBackendPresetInfo {
+        alias: "free-nemotron",
+        provider: OpenAiProviderPreset::OpenRouter,
+        model: "nvidia/nemotron-3-ultra:free",
+        env_var: "OPENROUTER_API_KEY",
+        signup_hint: "openrouter.ai/keys",
+        summary: "NVIDIA Nemotron 3 Ultra :free via OpenRouter (contexto longo para logs extensos)",
+    },
+];
+
+pub fn resolve_free_preset(alias: &str) -> Option<&'static FreeBackendPresetInfo> {
+    let normalized = alias.trim().to_ascii_lowercase();
+    FREE_BACKEND_PRESETS.iter().find(|p| p.alias == normalized)
+}
+
+pub fn format_free_presets_catalog() -> String {
+    let mut out = String::from(
+        "Presets gratuitos prontos (sem salvar chave em disco; exigem apenas variável de ambiente na sessão):\n",
+    );
+    for p in FREE_BACKEND_PRESETS {
+        let key_ready = env::var(p.env_var)
+            .ok()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+        let status = if key_ready {
+            "chave detectada"
+        } else {
+            "definir env"
+        };
+        out.push_str(&format!(
+            "  - {:<16} -> {:<10} | modelo='{:<30}' | ${:<18} ({}) | {}\n      Obter chave gratuita: https://{}\n",
+            p.alias,
+            p.provider.backend_id(),
+            p.model,
+            p.env_var,
+            status,
+            p.summary,
+            p.signup_hint
+        ));
+    }
+    out.push_str(
+        "Ativação rápida no REPL : `:backend free-gemini` (ou qualquer alias acima)\n\
+         Ativação rápida no eval : `servermind-ai eval run --backend free-groq --limit 6`",
+    );
+    out
 }
 
 pub struct OpenAiCompatBackend {
@@ -1451,24 +1559,45 @@ pub enum BackendKind {
     Claude,
     Gemini,
     Groq,
+    Mistral,
     OpenRouter,
     OpenAi,
+    FreePreset(&'static FreeBackendPresetInfo),
 }
 
 impl BackendKind {
     pub fn parse(raw: &str) -> Result<Self, String> {
-        match raw.trim().to_ascii_lowercase().as_str() {
+        let lower = raw.trim().to_ascii_lowercase();
+        if let Some(preset_info) = resolve_free_preset(&lower) {
+            return Ok(Self::FreePreset(preset_info));
+        }
+        match lower.as_str() {
             "ollama" => Ok(Self::Ollama),
             "neural" | "servermind" | "servermind-neural" => Ok(Self::Neural),
             "claude" | "anthropic" => Ok(Self::Claude),
             "gemini" | "google" => Ok(Self::Gemini),
             "groq" => Ok(Self::Groq),
+            "mistral" => Ok(Self::Mistral),
             "openrouter" => Ok(Self::OpenRouter),
             "openai" | "openai-compat" => Ok(Self::OpenAi),
             other => Err(format!(
-                "Backend desconhecido: '{}'. Opções suportadas: 'ollama' (padrão local), 'neural' (local), 'claude', 'gemini', 'groq', 'openrouter' ou 'openai'.",
+                "Backend desconhecido: '{}'. Opções suportadas: 'ollama' (padrão local), 'neural' (local), 'claude', 'gemini', 'groq', 'mistral', 'openrouter', 'openai' ou presets gratuitos ('free-gemini', 'free-groq', 'free-groq-qwen', 'free-mistral', 'free-openrouter', 'free-nemotron').",
                 other
             )),
+        }
+    }
+
+    pub fn resolve_openai_preset_and_default_model(
+        self,
+    ) -> Option<(OpenAiProviderPreset, Option<&'static str>)> {
+        match self {
+            Self::Gemini => Some((OpenAiProviderPreset::Gemini, None)),
+            Self::Groq => Some((OpenAiProviderPreset::Groq, None)),
+            Self::Mistral => Some((OpenAiProviderPreset::Mistral, None)),
+            Self::OpenRouter => Some((OpenAiProviderPreset::OpenRouter, None)),
+            Self::OpenAi => Some((OpenAiProviderPreset::OpenAi, None)),
+            Self::FreePreset(info) => Some((info.provider, Some(info.model))),
+            Self::Ollama | Self::Neural | Self::Claude => None,
         }
     }
 }
@@ -1755,5 +1884,21 @@ mod tests {
             streamed,
             "Analisei o erro com segurança e sem expor o token."
         );
+
+        // Catálogo de presets gratuitos prontos deve resolver aliases e exibir instruções
+        assert_eq!(FREE_BACKEND_PRESETS.len(), 6);
+        for info in FREE_BACKEND_PRESETS {
+            let parsed = BackendKind::parse(info.alias).expect("alias free-* deve ser reconhecido");
+            let (prov, mdl) = parsed
+                .resolve_openai_preset_and_default_model()
+                .expect("deve mapear para OpenAiProviderPreset");
+            assert_eq!(prov, info.provider);
+            assert_eq!(mdl, Some(info.model));
+        }
+        let catalog = format_free_presets_catalog();
+        assert!(catalog.contains("free-gemini"));
+        assert!(catalog.contains("free-groq"));
+        assert!(catalog.contains("free-mistral"));
+        assert!(catalog.contains("free-openrouter"));
     }
 }

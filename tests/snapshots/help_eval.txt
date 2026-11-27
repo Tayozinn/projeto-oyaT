@@ -11,7 +11,7 @@ Subcomandos:
       Executa a suíte com concorrência fixa = 1 e gera relatórios .json e .md.
 
 Opções de `eval run`:
-  --backend <BACKEND>      Backend alvo: ollama (padrão local), neural, claude, gemini, groq, openrouter, openai
+  --backend <BACKEND>      Backend alvo: ollama (padrão local), neural, claude, gemini, groq, mistral, openrouter, openai ou free-*
   --model <MODEL>          Modelo instalado ou remoto a avaliar (padrão: config.toml/env ou default do backend)
   --dataset <PATH>         Caminho do dataset JSON (padrão: eval/cases_v1.json)
   --category <CAT>         Filtra por categoria (repetível ou separada por vírgula)
