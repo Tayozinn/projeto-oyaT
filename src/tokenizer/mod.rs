@@ -4,6 +4,12 @@
 //! com tokens especiais, persistência em JSON, limpeza de corpus e divisão determinística
 //! entre conjuntos de treino, validação e teste.
 
+#![allow(
+    clippy::manual_find,
+    clippy::needless_lifetimes,
+    clippy::unnecessary_map_or
+)]
+
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -73,7 +79,8 @@ impl BpeTokenizer {
             let cleaned = normalize_corpus_text(text);
             for segment in split_non_special_segments(&cleaned) {
                 for piece in pretokenize(segment) {
-                    let seq: Vec<String> = piece.as_bytes().iter().map(|&b| byte_token(b)).collect();
+                    let seq: Vec<String> =
+                        piece.as_bytes().iter().map(|&b| byte_token(b)).collect();
                     if !seq.is_empty() {
                         *word_freqs.entry(seq).or_insert(0) += 1;
                     }
@@ -184,7 +191,10 @@ impl BpeTokenizer {
                             if let Some((rank, merged)) =
                                 self.merge_ranks.get(&(pair[0].clone(), pair[1].clone()))
                             {
-                                if best.as_ref().map_or(true, |(b_rank, _, _, _)| *rank < *b_rank) {
+                                if best
+                                    .as_ref()
+                                    .map_or(true, |(b_rank, _, _, _)| *rank < *b_rank)
+                                {
                                     best = Some((
                                         *rank,
                                         pair[0].clone(),
@@ -255,8 +265,7 @@ impl BpeTokenizer {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Falha ao serializar tokenizer: {}", e))?;
 
-        static TOK_ATOMIC_SEQ: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(1);
+        static TOK_ATOMIC_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let seq = TOK_ATOMIC_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let fname = path
             .file_name()
@@ -866,7 +875,8 @@ mod tests {
         assert!(chunks.iter().any(|c| c.contains("systemctl status nginx")));
         assert!(chunks
             .iter()
-            .any(|c| c.contains("<user> Como ver portas?") && c.contains("<assistant> Use ss -tulnp.")));
+            .any(|c| c.contains("<user> Como ver portas?")
+                && c.contains("<assistant> Use ss -tulnp.")));
         assert!(!chunks.iter().any(|c| c.contains("ignored")));
         assert!(!chunks.iter().any(|c| c.contains("BEGIN PRIVATE KEY")));
 

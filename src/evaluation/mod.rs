@@ -116,7 +116,8 @@ pub fn evaluate_neural_engine(
             seed: Some(0x5EED_2026_u64.wrapping_add(idx as u64)),
         };
         let t0 = Instant::now();
-        let (reply, generated_tokens) = engine.generate_with_config(&[], &case.prompt, gen_cfg, None);
+        let (reply, generated_tokens) =
+            engine.generate_with_config(&[], &case.prompt, gen_cfg, None);
         let latency_ms = t0.elapsed().as_millis();
         let lower = reply.to_ascii_lowercase();
         let hits = case
@@ -173,11 +174,11 @@ pub fn contains_keyword_boundary(haystack_lower: &str, kw_lower: &str) -> bool {
         let prev_ok = haystack_lower[..abs_start]
             .chars()
             .next_back()
-            .map_or(true, |c| !c.is_alphanumeric() && c != '_');
+            .is_none_or(|c| !c.is_alphanumeric() && c != '_');
         let next_ok = haystack_lower[abs_end..]
             .chars()
             .next()
-            .map_or(true, |c| !c.is_alphanumeric() && c != '_');
+            .is_none_or(|c| !c.is_alphanumeric() && c != '_');
         if prev_ok && next_ok {
             return true;
         }
@@ -245,9 +246,15 @@ mod tests {
             "verifique o processo e siga os passos de acesso",
             "ss"
         ));
-        assert!(!contains_keyword_boundary("acesse https://exemplo.local", "ps"));
+        assert!(!contains_keyword_boundary(
+            "acesse https://exemplo.local",
+            "ps"
+        ));
         assert!(!contains_keyword_boundary("o banco iniciou", "nc"));
-        assert!(!contains_keyword_boundary("use systemctl stop nginx", "top"));
+        assert!(!contains_keyword_boundary(
+            "use systemctl stop nginx",
+            "top"
+        ));
 
         assert!(contains_keyword_boundary("execute `ss -tulnp` agora", "ss"));
         assert!(contains_keyword_boundary("rode ps aux e top -b", "ps"));

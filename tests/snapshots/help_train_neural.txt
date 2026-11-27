@@ -1,0 +1,18 @@
+Uso: servermind-ai train-neural [opções]
+  --marathon                  Ativa Maratona Autônoma de 6h em 2 fases (Pré-treino + Fine-Tuning Chat + Sequência Evolutiva + SMQ1 INT8)
+  --max-duration <DUR>        Controla o tempo real de treino (ex.: 30s, 20m, 6h, 1h30m; salva limpo ao atingir ou em Ctrl+C)
+  --eval-every-secs <N>       Intervalo em segundos entre marcos da sequência evolutiva (automático se omitido)
+  --dataset <arquivo.jsonl>   Corpus Q&A em JSONL (padrão se --corpus-dir não for informado)
+  --corpus-dir <pasta>        Diretório recursivo de texto/código para pré-treino (repetível)
+  --chunk-chars <N>           Tamanho máximo de bloco por arquivo de corpus (padrão: 1200)
+  --out <pasta>               Diretório de saída dos checkpoints
+  --run-name <nome>           Nome da execução nos relatórios
+  --resume                    Retoma latest.bin e tokenizer.json existentes em --out
+  --steps <N>                 Número alvo de passos (padrão: 80 se --max-duration não for usado)
+  --d-model <N> --layers <N> --heads <N> --ff <N> --seq-len <N> --vocab <N> --batch-size <N>
+  --lr <f32> --min-lr <f32>   Taxa de aprendizado inicial e mínima (cosine decay)
+  --max-val-windows <N>       Limite uniforme de janelas na validação periódica (padrão: 128)
+  --device <auto|cpu|gpu>     Backend computacional (padrão: auto; gpu usa Vulkan RX 7600)
+  --export-quant <pasta>      Exporta pacote quantizado SMQ1 ('quantized.smq' + 'tokenizer.json') ao concluir
+  --bits <fp16|bf16|int8|int4> Precisão para --export-quant (padrão: int8)
+  --threads <N>               Limita o número máximo de threads CPU ativas (1..=64)

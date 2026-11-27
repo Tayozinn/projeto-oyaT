@@ -1975,7 +1975,10 @@ pub fn run_hw_cli(out: &mut dyn Write) -> i32 {
     let _ = writeln!(out, "OS / Arch        : {} / {}", hw.os, hw.arch);
     let _ = writeln!(out, "CPUs lógicas     : {}", hw.logical_cpus);
     if let (Some(tot_mb), Some(avail_mb)) = (hw.total_system_ram_mb, hw.available_system_ram_mb) {
-        let prof = hw.recommended_runtime_profile.as_deref().unwrap_or("standard");
+        let prof = hw
+            .recommended_runtime_profile
+            .as_deref()
+            .unwrap_or("standard");
         let _ = writeln!(
             out,
             "RAM Física Host  : {} MB total ({} MB livres) | perfil={}",
@@ -2143,8 +2146,14 @@ pub fn run_train_neural_cli_with_cancel(
                 let _ = writeln!(out, "  --dataset <arquivo.jsonl>   Corpus Q&A em JSONL (padrão se --corpus-dir não for informado)");
                 let _ = writeln!(out, "  --corpus-dir <pasta>        Diretório recursivo de texto/código para pré-treino (repetível)");
                 let _ = writeln!(out, "  --chunk-chars <N>           Tamanho máximo de bloco por arquivo de corpus (padrão: 1200)");
-                let _ = writeln!(out, "  --out <pasta>               Diretório de saída dos checkpoints");
-                let _ = writeln!(out, "  --run-name <nome>           Nome da execução nos relatórios");
+                let _ = writeln!(
+                    out,
+                    "  --out <pasta>               Diretório de saída dos checkpoints"
+                );
+                let _ = writeln!(
+                    out,
+                    "  --run-name <nome>           Nome da execução nos relatórios"
+                );
                 let _ = writeln!(out, "  --resume                    Retoma latest.bin e tokenizer.json existentes em --out");
                 let _ = writeln!(out, "  --steps <N>                 Número alvo de passos (padrão: 80 se --max-duration não for usado)");
                 let _ = writeln!(out, "  --d-model <N> --layers <N> --heads <N> --ff <N> --seq-len <N> --vocab <N> --batch-size <N>");
@@ -2152,7 +2161,10 @@ pub fn run_train_neural_cli_with_cancel(
                 let _ = writeln!(out, "  --max-val-windows <N>       Limite uniforme de janelas na validação periódica (padrão: 128)");
                 let _ = writeln!(out, "  --device <auto|cpu|gpu>     Backend computacional (padrão: auto; gpu usa Vulkan RX 7600)");
                 let _ = writeln!(out, "  --export-quant <pasta>      Exporta pacote quantizado SMQ1 ('quantized.smq' + 'tokenizer.json') ao concluir");
-                let _ = writeln!(out, "  --bits <fp16|bf16|int8|int4> Precisão para --export-quant (padrão: int8)");
+                let _ = writeln!(
+                    out,
+                    "  --bits <fp16|bf16|int8|int4> Precisão para --export-quant (padrão: int8)"
+                );
                 let _ = writeln!(out, "  --threads <N>               Limita o número máximo de threads CPU ativas (1..=64)");
                 return 0;
             }
@@ -2367,7 +2379,8 @@ pub fn run_train_neural_cli_with_cancel(
 
     if marathon {
         let total_dur = max_duration_opt.unwrap_or_else(|| Duration::from_secs(6 * 3600));
-        let out_dir = out_dir_opt.unwrap_or_else(|| PathBuf::from("checkpoints/servermind-neural-marathon"));
+        let out_dir =
+            out_dir_opt.unwrap_or_else(|| PathBuf::from("checkpoints/servermind-neural-marathon"));
         let quant_out = export_quant_dir
             .unwrap_or_else(|| PathBuf::from(format!("{}-int8", out_dir.display())));
         return run_autonomous_marathon(
@@ -2505,13 +2518,14 @@ pub fn run_train_neural_cli_with_cancel(
             max_val_windows,
             device,
         };
-        let mut resumed = match crate::training::Trainer::resume_from_checkpoint(&latest_ckpt, train_cfg) {
-            Ok(t) => t,
-            Err(e) => {
-                let _ = writeln!(err, "{}", e);
-                return 1;
-            }
-        };
+        let mut resumed =
+            match crate::training::Trainer::resume_from_checkpoint(&latest_ckpt, train_cfg) {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = writeln!(err, "{}", e);
+                    return 1;
+                }
+            };
         if tokenizer.vocab_size() != resumed.model.config.vocab_size {
             let _ = writeln!(
                 err,
@@ -2570,7 +2584,11 @@ pub fn run_train_neural_cli_with_cancel(
         let (warmup_s, eval_int, ckpt_int) = if max_duration_opt.is_some() {
             (10, 500, 1_000)
         } else {
-            ((max_steps / 10).max(2), (max_steps / 5).max(5), (max_steps / 2).max(10))
+            (
+                (max_steps / 10).max(2),
+                (max_steps / 5).max(5),
+                (max_steps / 2).max(10),
+            )
         };
         let train_cfg = crate::training::TrainingConfig {
             run_name: resolved_run_name.clone(),
@@ -2676,9 +2694,8 @@ pub fn run_train_neural_cli_with_cancel(
         None
     };
 
-    let auto_eval_secs = eval_every_secs_opt.or_else(|| {
-        max_duration_opt.map(|d| (d.as_secs() / 24).clamp(2, 900))
-    });
+    let auto_eval_secs =
+        eval_every_secs_opt.or_else(|| max_duration_opt.map(|d| (d.as_secs() / 24).clamp(2, 900)));
 
     let target_steps = max_steps;
     let run_res = if let Some(ref mut rec) = recorder {
@@ -2800,7 +2817,11 @@ pub fn run_train_neural_cli_with_cancel(
                     }
                 }
             }
-            if report.cancelled { 130 } else { 0 }
+            if report.cancelled {
+                130
+            } else {
+                0
+            }
         }
         Err(e) => {
             let _ = writeln!(err, "Erro no treinamento: {}", e);
@@ -3038,7 +3059,10 @@ impl EvolutionSequenceRecorder {
             let _ = writeln!(out, "│  [{}] Q: {}", s.domain, s.prompt);
             let _ = writeln!(out, "│         A: {}", s.response);
         }
-        let _ = writeln!(out, "└──────────────────────────────────────────────────────────────────────────");
+        let _ = writeln!(
+            out,
+            "└──────────────────────────────────────────────────────────────────────────"
+        );
         let _ = out.flush();
 
         self.entries.push(entry);
@@ -3056,7 +3080,11 @@ impl EvolutionSequenceRecorder {
             self.total_params,
             self.total_params as f64 / 1e6,
             active_device,
-            if cancelled { "Pausado pelo usuário (Ctrl+C, salvo)" } else { "Ativo / Concluído" }
+            if cancelled {
+                "Pausado pelo usuário (Ctrl+C, salvo)"
+            } else {
+                "Ativo / Concluído"
+            }
         ));
         if let Some(d) = self.planned_duration {
             md.push_str(&format!("- **Duração Alvo:** `{}`\n", format_hms(d)));
@@ -3065,19 +3093,42 @@ impl EvolutionSequenceRecorder {
         md.push_str("| Marco | Fase | Tempo | Step | `train_loss` | `val_loss` | Perplexidade | `lr` | `tok/s` |\n");
         md.push_str("| ---: | :--- | :---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
         for e in &self.entries {
-            let tl = e.train_loss.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "-".into());
-            let vl = e.val_loss.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "-".into());
-            let pp = e.perplexity.map(|v| format!("{:.2}", v)).unwrap_or_else(|| "-".into());
+            let tl = e
+                .train_loss
+                .map(|v| format!("{:.4}", v))
+                .unwrap_or_else(|| "-".into());
+            let vl = e
+                .val_loss
+                .map(|v| format!("{:.4}", v))
+                .unwrap_or_else(|| "-".into());
+            let pp = e
+                .perplexity
+                .map(|v| format!("{:.2}", v))
+                .unwrap_or_else(|| "-".into());
             md.push_str(&format!(
                 "| **#{:02}** | {} | `{}` | `{}` | `{}` | `{}` | `{}` | `{:.5}` | `{:.1}` |\n",
-                e.index, e.phase, e.elapsed_hms, e.step, tl, vl, pp, e.learning_rate, e.tokens_per_sec
+                e.index,
+                e.phase,
+                e.elapsed_hms,
+                e.step,
+                tl,
+                vl,
+                pp,
+                e.learning_rate,
+                e.tokens_per_sec
             ));
         }
 
         md.push_str("\n## 2. Evolução Real das Respostas Marco a Marco\n\n");
         for e in &self.entries {
-            let tl = e.train_loss.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "-".into());
-            let vl = e.val_loss.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "-".into());
+            let tl = e
+                .train_loss
+                .map(|v| format!("{:.4}", v))
+                .unwrap_or_else(|| "-".into());
+            let vl = e
+                .val_loss
+                .map(|v| format!("{:.4}", v))
+                .unwrap_or_else(|| "-".into());
             md.push_str(&format!(
                 "### Marco #{:02} — `{}` (`{}` | `step={}` | `train_loss={}` | `val_loss={}`)\n\n",
                 e.index, e.phase, e.elapsed_hms, e.step, tl, vl
@@ -3305,7 +3356,10 @@ fn run_autonomous_marathon(
     let total_secs = params.total_duration.as_secs_f64().max(1.0);
     let (stage1_dur, stage2_dur) = if has_pretrain_books {
         let s1 = Duration::from_secs_f64((total_secs * 0.35).max(0.5));
-        let s2 = params.total_duration.saturating_sub(s1).max(Duration::from_millis(500));
+        let s2 = params
+            .total_duration
+            .saturating_sub(s1)
+            .max(Duration::from_millis(500));
         (Some(s1), s2)
     } else {
         (None, params.total_duration)
@@ -3439,13 +3493,7 @@ fn run_autonomous_marathon(
                 masked_train: None,
                 masked_val: Some(&qa_val_masked),
             };
-            trainer.train_with_session_options(
-                &s1_train_wins,
-                &[],
-                tokenizer.pad_id(),
-                None,
-                opts,
-            )
+            trainer.train_with_session_options(&s1_train_wins, &[], tokenizer.pad_id(), None, opts)
         };
 
         match s1_res {
@@ -3515,13 +3563,7 @@ fn run_autonomous_marathon(
                 masked_train: Some(&qa_train_masked),
                 masked_val: Some(&qa_val_masked),
             };
-            trainer.train_with_session_options(
-                &[],
-                &[],
-                tokenizer.pad_id(),
-                None,
-                opts,
-            )
+            trainer.train_with_session_options(&[], &[], tokenizer.pad_id(), None, opts)
         };
 
         match s2_res {
@@ -3604,7 +3646,11 @@ fn run_autonomous_marathon(
         "=========================================================================="
     );
 
-    if was_cancelled { 130 } else { 0 }
+    if was_cancelled {
+        130
+    } else {
+        0
+    }
 }
 
 struct QuantExportStats {
@@ -3650,8 +3696,13 @@ fn export_quantized_package(
     let qmodel = crate::neural::quantize_model_in_memory(&fp32_model, precision)?;
     let dst_ram_bytes = qmodel.actual_weight_bytes();
 
-    std::fs::create_dir_all(dst_dir)
-        .map_err(|e| format!("Falha ao criar pasta destino '{}': {}", dst_dir.display(), e))?;
+    std::fs::create_dir_all(dst_dir).map_err(|e| {
+        format!(
+            "Falha ao criar pasta destino '{}': {}",
+            dst_dir.display(),
+            e
+        )
+    })?;
     let tok_dst = dst_dir.join("tokenizer.json");
     if src_dir != dst_dir {
         std::fs::copy(&tok_src, &tok_dst).map_err(|e| {
@@ -3684,9 +3735,7 @@ fn export_quantized_package(
 fn handle_quantize_command(arg: &str) {
     let parts: Vec<&str> = arg.split_whitespace().collect();
     if parts.len() < 2 {
-        println!(
-            "Uso: :quantize <pasta_ckpt_fp32> <pasta_saida_smq> [fp16|bf16|int8|int4]"
-        );
+        println!("Uso: :quantize <pasta_ckpt_fp32> <pasta_saida_smq> [fp16|bf16|int8|int4]");
         return;
     }
     let bits_raw = parts.get(2).copied().unwrap_or("int8");
@@ -3782,7 +3831,10 @@ pub fn run_eval_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn W
                 match args[i + 1].parse::<usize>() {
                     Ok(v) if v > 0 => max_ram_mb_opt = Some(v),
                     _ => {
-                        let _ = writeln!(err, "Valor inválido para '--max-ram-mb': esperado inteiro > 0.");
+                        let _ = writeln!(
+                            err,
+                            "Valor inválido para '--max-ram-mb': esperado inteiro > 0."
+                        );
                         return 2;
                     }
                 }
@@ -3792,7 +3844,10 @@ pub fn run_eval_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn W
                 match args[i + 1].parse::<usize>() {
                     Ok(v) if v > 0 => threads_opt = Some(v.min(64)),
                     _ => {
-                        let _ = writeln!(err, "Valor inválido para '--threads': esperado inteiro > 0.");
+                        let _ = writeln!(
+                            err,
+                            "Valor inválido para '--threads': esperado inteiro > 0."
+                        );
                         return 2;
                     }
                 }
@@ -3845,16 +3900,14 @@ pub fn run_eval_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn W
         ckpt_dir
     };
 
-    let mut engine = match crate::inference::NeuralEngine::load_from_dir_with_budget(
-        &eval_target_dir,
-        budget,
-    ) {
-        Ok(e) => e,
-        Err(e) => {
-            let _ = writeln!(err, "{}", e);
-            return 1;
-        }
-    };
+    let mut engine =
+        match crate::inference::NeuralEngine::load_from_dir_with_budget(&eval_target_dir, budget) {
+            Ok(e) => e,
+            Err(e) => {
+                let _ = writeln!(err, "{}", e);
+                return 1;
+            }
+        };
     if let Some(kv) = kv_cache_opt {
         engine = engine.with_kv_precision(kv);
     }
@@ -3895,11 +3948,16 @@ pub fn run_eval_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn W
         );
         obj.insert(
             "weight_ram_mb".to_string(),
-            serde_json::json!((engine.weight_bytes() as f64 / (1024.0 * 1024.0) * 1000.0).round() / 1000.0),
+            serde_json::json!(
+                (engine.weight_bytes() as f64 / (1024.0 * 1024.0) * 1000.0).round() / 1000.0
+            ),
         );
         obj.insert(
             "estimated_runtime_ram_mb".to_string(),
-            serde_json::json!((engine.estimated_runtime_bytes() as f64 / (1024.0 * 1024.0) * 1000.0).round() / 1000.0),
+            serde_json::json!(
+                (engine.estimated_runtime_bytes() as f64 / (1024.0 * 1024.0) * 1000.0).round()
+                    / 1000.0
+            ),
         );
     }
     let json = serde_json::to_string_pretty(&json_val).unwrap_or_default();

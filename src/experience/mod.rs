@@ -5,6 +5,8 @@
 //! Camada 3: Memória de Treinamento (`training_examples`) — exemplos aprovados por gate rigoroso
 //!           para ciclos controlados de treinamento (nunca atualizando pesos a cada chat).
 
+#![allow(clippy::too_many_arguments)]
+
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::fs::File;

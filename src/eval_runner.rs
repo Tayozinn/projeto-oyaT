@@ -135,10 +135,8 @@ fn redact_local_user_segments(normalized: &str) -> String {
         && bytes[2] == b'/'
     {
         Some(&normalized[3..])
-    } else if normalized.starts_with('/') {
-        Some(&normalized[1..])
     } else {
-        None
+        normalized.strip_prefix('/')
     };
 
     if let Some(rest) = after_drive {
@@ -680,6 +678,7 @@ pub fn run_evaluation<C: EvalModelClient + ?Sized>(
     run_evaluation_with_progress(client, config, |_| {})
 }
 
+#[allow(clippy::too_many_arguments)]
 fn evaluate_optional_judge<C: EvalModelClient + ?Sized>(
     client: &C,
     case: &EvalCase,
@@ -824,8 +823,8 @@ where
         let ext = config
             .cancel_flag
             .as_ref()
-            .map_or(false, |f| f.load(Ordering::SeqCst));
-        let sys = ctrlc_guard.as_ref().map_or(false, |g| g.is_triggered());
+            .is_some_and(|f| f.load(Ordering::SeqCst));
+        let sys = ctrlc_guard.as_ref().is_some_and(|g| g.is_triggered());
         if sys {
             if let Some(flag) = &config.cancel_flag {
                 flag.store(true, Ordering::SeqCst);
@@ -1038,11 +1037,11 @@ where
                 || record
                     .deterministic
                     .as_ref()
-                    .map_or(false, |d| d.needs_human_review)
+                    .is_some_and(|d| d.needs_human_review)
                 || record
                     .judge_estimate
                     .as_ref()
-                    .map_or(false, |j| j.needs_human_review);
+                    .is_some_and(|j| j.needs_human_review);
 
             let finished_status = record.status;
             records.push(record);

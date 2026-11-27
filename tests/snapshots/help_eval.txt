@@ -1,0 +1,29 @@
+SERVERMIND AI — Avaliação Automatizada Offline (Estritamente Consultiva)
+
+Subcomandos:
+  eval --help
+      Exibe esta ajuda.
+  eval list-cases [--dataset <PATH>] [--category <CAT>] [--case <ID>]
+      Lista os casos do conjunto versionado (100% offline, sem Ollama nem SQLite).
+  eval list-models [--ollama-url <URL>] [--timeout-secs <N>]
+      Lista os modelos já instalados no Ollama local (sem baixar modelos).
+  eval run [opções]
+      Executa a suíte com concorrência fixa = 1 e gera relatórios .json e .md.
+
+Opções de `eval run`:
+  --model <MODEL>          Modelo instalado a avaliar (padrão: config.toml/env ou llama3.2)
+  --dataset <PATH>         Caminho do dataset JSON (padrão: eval/cases_v1.json)
+  --category <CAT>         Filtra por categoria (repetível ou separada por vírgula)
+  --case <ID>              Filtra por ID de caso (repetível ou separado por vírgula)
+  --limit <N>              Limita a quantidade máxima de casos após o filtro (> 0)
+  --out-dir <DIR>          Pasta base para os relatórios (padrão: eval_reports)
+  --timeout-secs <N>       Timeout por requisição ao Ollama em segundos (> 0)
+  --max-duration <DUR>     Duração máxima total (ex.: 30s, 15m, 7h, 1h30m; até 7d)
+  --repeat <N>             Repetições por caso (1..=20; padrão: 1)
+  --judge-model <MODEL>    Juiz LLM local opcional (sempre marcado como estimativa)
+  --ollama-url <URL>       URL local de loopback do Ollama (127.0.0.1/localhost/[::1])
+
+Garantias:
+  - Nunca lê nem escreve `servermind.db` e nunca inclui `system_prompt` privado nos relatórios.
+  - Não treina modelos, não altera pesos/Modelfiles e não executa comandos sugeridos.
+  - Códigos de saída: 0 = sucesso/parada no teto `--max-duration`; 1 = erro ou falha global; 2 = uso inválido; 130 = cancelado (Ctrl+C).

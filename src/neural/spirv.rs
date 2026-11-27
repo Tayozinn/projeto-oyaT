@@ -344,7 +344,8 @@ impl SpvBuilder {
         let id = m.next_id;
         m.next_id += 1;
         m.f32_consts.insert(bits, id);
-        m.const_defs.push((OP_CONSTANT, vec![self.ty_f32, id, bits]));
+        m.const_defs
+            .push((OP_CONSTANT, vec![self.ty_f32, id, bits]));
         id
     }
 
@@ -814,7 +815,11 @@ impl SpvBuilder {
             &[self.var_wgid, DEC_BUILTIN, BUILTIN_WORKGROUP_ID],
         );
 
-        Self::emit_inst(&mut out, OP_DECORATE, &[self.ty_rt_f32, DEC_ARRAY_STRIDE, 4]);
+        Self::emit_inst(
+            &mut out,
+            OP_DECORATE,
+            &[self.ty_rt_f32, DEC_ARRAY_STRIDE, 4],
+        );
         Self::emit_inst(&mut out, OP_DECORATE, &[self.ty_arena_struct, DEC_BLOCK]);
         Self::emit_inst(
             &mut out,
@@ -828,7 +833,11 @@ impl SpvBuilder {
         );
         Self::emit_inst(&mut out, OP_DECORATE, &[self.var_arena, DEC_BINDING, 0]);
 
-        Self::emit_inst(&mut out, OP_DECORATE, &[self.ty_rt_u32, DEC_ARRAY_STRIDE, 4]);
+        Self::emit_inst(
+            &mut out,
+            OP_DECORATE,
+            &[self.ty_rt_u32, DEC_ARRAY_STRIDE, 4],
+        );
         Self::emit_inst(&mut out, OP_DECORATE, &[self.ty_io_struct, DEC_BLOCK]);
         Self::emit_inst(
             &mut out,
@@ -838,7 +847,11 @@ impl SpvBuilder {
         Self::emit_inst(&mut out, OP_DECORATE, &[self.var_io, DEC_DESCRIPTOR_SET, 0]);
         Self::emit_inst(&mut out, OP_DECORATE, &[self.var_io, DEC_BINDING, 1]);
 
-        Self::emit_inst(&mut out, OP_DECORATE, &[self.ty_arr_pc, DEC_ARRAY_STRIDE, 4]);
+        Self::emit_inst(
+            &mut out,
+            OP_DECORATE,
+            &[self.ty_arr_pc, DEC_ARRAY_STRIDE, 4],
+        );
         Self::emit_inst(&mut out, OP_DECORATE, &[self.ty_pc_struct, DEC_BLOCK]);
         Self::emit_inst(
             &mut out,
@@ -919,7 +932,11 @@ impl SpvBuilder {
         );
 
         // StorageBuffer 0: Arena f32[]
-        Self::emit_inst(&mut out, OP_TYPE_RUNTIME_ARRAY, &[self.ty_rt_f32, self.ty_f32]);
+        Self::emit_inst(
+            &mut out,
+            OP_TYPE_RUNTIME_ARRAY,
+            &[self.ty_rt_f32, self.ty_f32],
+        );
         Self::emit_inst(
             &mut out,
             OP_TYPE_STRUCT,
@@ -928,7 +945,11 @@ impl SpvBuilder {
         Self::emit_inst(
             &mut out,
             OP_TYPE_POINTER,
-            &[self.ty_ptr_sb_arena, SC_STORAGE_BUFFER, self.ty_arena_struct],
+            &[
+                self.ty_ptr_sb_arena,
+                SC_STORAGE_BUFFER,
+                self.ty_arena_struct,
+            ],
         );
         Self::emit_inst(
             &mut out,
@@ -937,7 +958,11 @@ impl SpvBuilder {
         );
 
         // StorageBuffer 1: IO u32[]
-        Self::emit_inst(&mut out, OP_TYPE_RUNTIME_ARRAY, &[self.ty_rt_u32, self.ty_u32]);
+        Self::emit_inst(
+            &mut out,
+            OP_TYPE_RUNTIME_ARRAY,
+            &[self.ty_rt_u32, self.ty_u32],
+        );
         Self::emit_inst(
             &mut out,
             OP_TYPE_STRUCT,
@@ -1000,7 +1025,11 @@ impl SpvBuilder {
         }
 
         // 9. Definição da Função `main`
-        Self::emit_inst(&mut out, OP_FUNCTION, &[self.ty_void, self.fn_main, 0, self.ty_fn_void]);
+        Self::emit_inst(
+            &mut out,
+            OP_FUNCTION,
+            &[self.ty_void, self.fn_main, 0, self.ty_fn_void],
+        );
         Self::emit_inst(&mut out, OP_LABEL, &[self.entry_lbl]);
         out.extend_from_slice(&m.local_vars);
         out.extend_from_slice(&m.body);

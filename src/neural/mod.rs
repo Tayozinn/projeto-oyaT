@@ -8,17 +8,33 @@
 //! - Inferência autoregressiva (greedy e top-k/temperatura)
 //! - Salvamento e carregamento de checkpoints binários completos (pesos + estado do otimizador).
 
+#![allow(
+    clippy::approx_constant,
+    clippy::chunks_exact_to_as_chunks,
+    clippy::derivable_impls,
+    clippy::excessive_precision,
+    clippy::identity_op,
+    clippy::manual_c_str_literals,
+    clippy::manual_div_ceil,
+    clippy::manual_is_multiple_of,
+    clippy::missing_transmute_annotations,
+    clippy::needless_lifetimes,
+    clippy::needless_range_loop,
+    clippy::too_many_arguments,
+    clippy::unnecessary_map_or
+)]
+
 pub mod gpu;
 pub mod ops;
 pub mod quant;
 pub mod spirv;
 
 pub use self::gpu::{ComputeDevice, VulkanDevice, VulkanTrainingSession};
+use self::ops::{axpy_f32, dot_f32, matmul_nn, matmul_nt, matmul_tn};
 pub use self::quant::{
     load_quantized_checkpoint, quantize_model_in_memory, save_quantized_checkpoint,
     KvCachePrecision, WeightPrecision,
 };
-use self::ops::{axpy_f32, dot_f32, matmul_nn, matmul_nt, matmul_tn};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -68,7 +84,9 @@ impl TransformerConfig {
         let pos_e = self.max_seq_len.checked_mul(self.d_model)?;
         let embed = tok_e.checked_add(pos_e)?;
 
-        let qkvo = 4usize.checked_mul(self.d_model)?.checked_mul(self.d_model)?;
+        let qkvo = 4usize
+            .checked_mul(self.d_model)?
+            .checked_mul(self.d_model)?;
         let ffn = 2usize.checked_mul(self.d_model)?.checked_mul(self.d_ff)?;
         let norms_biases = self.d_ff.checked_add(3usize.checked_mul(self.d_model)?)?;
         let per_layer = qkvo.checked_add(ffn)?.checked_add(norms_biases)?;
@@ -738,10 +756,8 @@ impl ServerMindTransformer {
     /// Retorna o consumo real em bytes de todos os pesos residentes na RAM
     /// (incluindo os tensores `FP32` remanescentes e, quando quantizado, as matrizes comprimidas).
     pub fn actual_weight_bytes(&self) -> usize {
-        let mut f32_elems = self.token_emb.len()
-            + self.pos_emb.len()
-            + self.ln_f_gamma.len()
-            + self.lm_head.len();
+        let mut f32_elems =
+            self.token_emb.len() + self.pos_emb.len() + self.ln_f_gamma.len() + self.lm_head.len();
         for b in &self.blocks {
             f32_elems += b.ln1_gamma.len()
                 + b.wq.len()
@@ -954,7 +970,8 @@ impl ServerMindTransformer {
                         let h_off = h * head_dim;
                         for step_idx in 0..n_new {
                             let abs_i = pos_start + step_idx;
-                            let q_row = &q_new[step_idx * d + h_off..step_idx * d + h_off + head_dim];
+                            let q_row =
+                                &q_new[step_idx * d + h_off..step_idx * d + h_off + head_dim];
                             let mut max_s = f32::NEG_INFINITY;
                             for j in 0..=abs_i {
                                 let k_row = &k_all[j * d + h_off..j * d + h_off + head_dim];
@@ -971,7 +988,8 @@ impl ServerMindTransformer {
                                 sum_e += e;
                             }
                             let inv = 1.0 / sum_e.max(1e-12);
-                            let ctx_row = &mut ctx[step_idx * d + h_off..step_idx * d + h_off + head_dim];
+                            let ctx_row =
+                                &mut ctx[step_idx * d + h_off..step_idx * d + h_off + head_dim];
                             for j in 0..=abs_i {
                                 let p = probs[j] * inv;
                                 let v_row = &v_all[j * d + h_off..j * d + h_off + head_dim];
@@ -987,7 +1005,8 @@ impl ServerMindTransformer {
                         let h_off = h * head_dim;
                         for step_idx in 0..n_new {
                             let abs_i = pos_start + step_idx;
-                            let q_row = &q_new[step_idx * d + h_off..step_idx * d + h_off + head_dim];
+                            let q_row =
+                                &q_new[step_idx * d + h_off..step_idx * d + h_off + head_dim];
                             let mut max_s = f32::NEG_INFINITY;
                             for j in 0..=abs_i {
                                 let k_row = &k_all[j * d + h_off..j * d + h_off + head_dim];
@@ -1008,7 +1027,8 @@ impl ServerMindTransformer {
                                 sum_e += e;
                             }
                             let inv = 1.0 / sum_e.max(1e-12);
-                            let ctx_row = &mut ctx[step_idx * d + h_off..step_idx * d + h_off + head_dim];
+                            let ctx_row =
+                                &mut ctx[step_idx * d + h_off..step_idx * d + h_off + head_dim];
                             for j in 0..=abs_i {
                                 let p = probs[j] * inv;
                                 let v_row = &v_all[j * d + h_off..j * d + h_off + head_dim];
@@ -1028,7 +1048,8 @@ impl ServerMindTransformer {
                         let h_off = h * head_dim;
                         for step_idx in 0..n_new {
                             let abs_i = pos_start + step_idx;
-                            let q_row = &q_new[step_idx * d + h_off..step_idx * d + h_off + head_dim];
+                            let q_row =
+                                &q_new[step_idx * d + h_off..step_idx * d + h_off + head_dim];
                             let mut max_s = f32::NEG_INFINITY;
                             for j in 0..=abs_i {
                                 let k_row = &k_all[j * d + h_off..j * d + h_off + head_dim];
@@ -1049,7 +1070,8 @@ impl ServerMindTransformer {
                                 sum_e += e;
                             }
                             let inv = 1.0 / sum_e.max(1e-12);
-                            let ctx_row = &mut ctx[step_idx * d + h_off..step_idx * d + h_off + head_dim];
+                            let ctx_row =
+                                &mut ctx[step_idx * d + h_off..step_idx * d + h_off + head_dim];
                             for j in 0..=abs_i {
                                 let alpha = probs[j] * inv * vs[j];
                                 let v_row = &v_all[j * d + h_off..j * d + h_off + head_dim];
@@ -1205,7 +1227,14 @@ impl ServerMindTransformer {
             }
 
             ws.attn_out[..td].fill(0.0);
-            matmul_nn(&lc.attn_ctx[..td], &block.wo, &mut ws.attn_out[..td], t, d, d);
+            matmul_nn(
+                &lc.attn_ctx[..td],
+                &block.wo,
+                &mut ws.attn_out[..td],
+                t,
+                d,
+                d,
+            );
             for i in 0..td {
                 lc.x_mid[i] = lc.x_in[i] + ws.attn_out[i];
             }
@@ -1293,9 +1322,23 @@ impl ServerMindTransformer {
         }
 
         // Backprop LM Head: d_lm_head += ln_f^T @ d_logits, d_ln_f = d_logits @ lm_head^T
-        matmul_tn(&ws.ln_f[..td], &ws.d_logits[..tv], &mut grads.lm_head, d, t, v);
+        matmul_tn(
+            &ws.ln_f[..td],
+            &ws.d_logits[..tv],
+            &mut grads.lm_head,
+            d,
+            t,
+            v,
+        );
         ws.d_ln_f[..td].fill(0.0);
-        matmul_nt(&ws.d_logits[..tv], &self.lm_head, &mut ws.d_ln_f[..td], t, v, d);
+        matmul_nt(
+            &ws.d_logits[..tv],
+            &self.lm_head,
+            &mut ws.d_ln_f[..td],
+            t,
+            v,
+            d,
+        );
 
         rmsnorm_backward_into(
             &ws.x[..td],
@@ -1357,7 +1400,14 @@ impl ServerMindTransformer {
             ws.d_x_in[..td].copy_from_slice(&ws.d_x_mid[..td]);
             matmul_tn(&c.attn_ctx[..td], &ws.d_x_mid[..td], &mut bg.wo, d, t, d);
             ws.d_attn_ctx[..td].fill(0.0);
-            matmul_nt(&ws.d_x_mid[..td], &block.wo, &mut ws.d_attn_ctx[..td], t, d, d);
+            matmul_nt(
+                &ws.d_x_mid[..td],
+                &block.wo,
+                &mut ws.d_attn_ctx[..td],
+                t,
+                d,
+                d,
+            );
 
             ws.d_q[..td].fill(0.0);
             ws.d_k[..td].fill(0.0);
@@ -2238,7 +2288,11 @@ pub fn load_checkpoint(
     let payload_bytes = (total_floats as u64)
         .checked_mul(4)
         .ok_or_else(|| "Overflow no tamanho em bytes do checkpoint.".to_string())?;
-    let trailer_bytes = if ver == CHECKPOINT_VERSION { 4u64 } else { 0u64 };
+    let trailer_bytes = if ver == CHECKPOINT_VERSION {
+        4u64
+    } else {
+        0u64
+    };
     let expected_file_len = 12u64
         .checked_add(meta_len as u64)
         .and_then(|x| x.checked_add(payload_bytes))
@@ -2854,30 +2908,31 @@ mod tests {
         let eps = 5e-4f32;
         let atol = 1e-3f32;
         let rtol = 2e-2f32;
-        let check_grad = |model: &mut ServerMindTransformer,
-                          name: &str,
-                          analytic: f32,
-                          mut getter: Box<dyn FnMut(&mut ServerMindTransformer) -> &mut f32>| {
-            let orig = *getter(model);
-            *getter(model) = orig + eps;
-            let mut g_dummy = TransformerGrads::zeros_like(&model.config);
-            let (l_plus, _) = model.forward_and_backward(&input, &target, 0, &mut g_dummy);
-            *getter(model) = orig - eps;
-            let (l_minus, _) = model.forward_and_backward(&input, &target, 0, &mut g_dummy);
-            *getter(model) = orig;
-            let numeric = (l_plus - l_minus) / (2.0 * eps);
-            let diff = (analytic - numeric).abs();
-            let bound = atol + rtol * numeric.abs().max(analytic.abs());
-            assert!(
-                diff <= bound,
-                "grad mismatch em {}: analytic={} numeric={} diff={} bound={}",
-                name,
-                analytic,
-                numeric,
-                diff,
-                bound
-            );
-        };
+        let check_grad =
+            |model: &mut ServerMindTransformer,
+             name: &str,
+             analytic: f32,
+             mut getter: Box<dyn FnMut(&mut ServerMindTransformer) -> &mut f32>| {
+                let orig = *getter(model);
+                *getter(model) = orig + eps;
+                let mut g_dummy = TransformerGrads::zeros_like(&model.config);
+                let (l_plus, _) = model.forward_and_backward(&input, &target, 0, &mut g_dummy);
+                *getter(model) = orig - eps;
+                let (l_minus, _) = model.forward_and_backward(&input, &target, 0, &mut g_dummy);
+                *getter(model) = orig;
+                let numeric = (l_plus - l_minus) / (2.0 * eps);
+                let diff = (analytic - numeric).abs();
+                let bound = atol + rtol * numeric.abs().max(analytic.abs());
+                assert!(
+                    diff <= bound,
+                    "grad mismatch em {}: analytic={} numeric={} diff={} bound={}",
+                    name,
+                    analytic,
+                    numeric,
+                    diff,
+                    bound
+                );
+            };
 
         // Top-level: token_emb (repetido, único e não-usado), pos_emb, ln_f_gamma, lm_head
         check_grad(
@@ -3179,7 +3234,8 @@ mod tests {
 
         // 3. Parada imediata em `stop_tokens` secundário
         let target_stop = greedy_kv[prompt.len() + 2];
-        let stopped = model.generate_with_options(&prompt, 18, 0.0, 4, &[999, target_stop], 77, None);
+        let stopped =
+            model.generate_with_options(&prompt, 18, 0.0, 4, &[999, target_stop], 77, None);
         assert!(stopped.len() <= prompt.len() + 3);
         assert_eq!(*stopped.last().unwrap(), target_stop);
     }
@@ -3236,7 +3292,8 @@ mod tests {
         let mut w = std::io::BufWriter::new(file);
         w.write_all(b"SMNN").unwrap();
         w.write_all(&1u32.to_le_bytes()).unwrap();
-        w.write_all(&(meta_bytes.len() as u32).to_le_bytes()).unwrap();
+        w.write_all(&(meta_bytes.len() as u32).to_le_bytes())
+            .unwrap();
         w.write_all(&meta_bytes).unwrap();
         model.visit_param_slices(|slice| {
             for &val in slice {
@@ -3337,7 +3394,11 @@ mod tests {
         b6[mid] ^= 0x04;
         std::fs::write(&p6, &b6).unwrap();
         let err_crc = load_checkpoint(&p6).unwrap_err();
-        assert!(err_crc.contains("CRC32"), "esperado erro CRC32, obtido: {}", err_crc);
+        assert!(
+            err_crc.contains("CRC32"),
+            "esperado erro CRC32, obtido: {}",
+            err_crc
+        );
         let _ = std::fs::remove_file(&p6);
 
         // 7. Retrocompatibilidade SMNN v1 + rejeição de `NaN` em v1
@@ -3693,8 +3754,7 @@ mod tests {
 
         let tr1 = std::time::Instant::now();
         for _ in 0..16 {
-            let _ =
-                model.forward_and_backward_with_workspace(&inp, &tgt, 0, &mut grads, &mut ws);
+            let _ = model.forward_and_backward_with_workspace(&inp, &tgt, 0, &mut grads, &mut ws);
         }
         let opt_ms = tr1.elapsed().as_secs_f64() * 1000.0 / 16.0;
 
@@ -3737,13 +3797,26 @@ mod tests {
             ("scale_and_grad_sq", &k.scale_and_grad_sq),
             ("adamw_step", &k.adamw_step),
         ] {
-            validate_spirv_header(words).unwrap_or_else(|e| panic!("SPIR-V '{}' inválido: {}", name, e));
+            validate_spirv_header(words)
+                .unwrap_or_else(|e| panic!("SPIR-V '{}' inválido: {}", name, e));
         }
 
-        assert_eq!(super::ComputeDevice::parse("auto").unwrap(), super::ComputeDevice::Auto);
-        assert_eq!(super::ComputeDevice::parse("CPU").unwrap(), super::ComputeDevice::Cpu);
-        assert_eq!(super::ComputeDevice::parse("gpu").unwrap(), super::ComputeDevice::Gpu);
-        assert_eq!(super::ComputeDevice::parse("vulkan").unwrap(), super::ComputeDevice::Gpu);
+        assert_eq!(
+            super::ComputeDevice::parse("auto").unwrap(),
+            super::ComputeDevice::Auto
+        );
+        assert_eq!(
+            super::ComputeDevice::parse("CPU").unwrap(),
+            super::ComputeDevice::Cpu
+        );
+        assert_eq!(
+            super::ComputeDevice::parse("gpu").unwrap(),
+            super::ComputeDevice::Gpu
+        );
+        assert_eq!(
+            super::ComputeDevice::parse("vulkan").unwrap(),
+            super::ComputeDevice::Gpu
+        );
         assert!(super::ComputeDevice::parse("cuda").is_err());
     }
 
@@ -3784,7 +3857,8 @@ mod tests {
         let mut grads_cpu = TransformerGrads::zeros_like(&cfg);
 
         let (l1_gpu, c1_gpu) = sess.forward_and_backward_sample(&in1, &tg1, 0).unwrap();
-        let (l1_cpu, c1_cpu) = model_cpu.forward_and_backward_reference(&in1, &tg1, 0, &mut grads_cpu);
+        let (l1_cpu, c1_cpu) =
+            model_cpu.forward_and_backward_reference(&in1, &tg1, 0, &mut grads_cpu);
         assert_eq!(c1_gpu, c1_cpu);
         assert!(
             (l1_gpu - l1_cpu).abs() <= 2e-3 * (1.0 + l1_cpu.abs()),
@@ -3794,7 +3868,8 @@ mod tests {
         );
 
         let (l2_gpu, c2_gpu) = sess.forward_and_backward_sample(&in2, &tg2, 0).unwrap();
-        let (l2_cpu, c2_cpu) = model_cpu.forward_and_backward_reference(&in2, &tg2, 0, &mut grads_cpu);
+        let (l2_cpu, c2_cpu) =
+            model_cpu.forward_and_backward_reference(&in2, &tg2, 0, &mut grads_cpu);
         assert_eq!(c2_gpu, c2_cpu);
         assert!(
             (l2_gpu - l2_cpu).abs() <= 2e-3 * (1.0 + l2_cpu.abs()),
@@ -3896,7 +3971,8 @@ mod tests {
     #[test]
     #[ignore]
     fn benchmark_sm006_rx7600_gpu_vs_cpu_crossover() {
-        let dev = super::VulkanDevice::global().expect("Vulkan GPU requerida para benchmark SM-006");
+        let dev =
+            super::VulkanDevice::global().expect("Vulkan GPU requerida para benchmark SM-006");
         println!(
             "=== GPU DETECTADA: {} | VRAM={} MB | API={} ===",
             dev.info.device_name, dev.info.device_local_vram_mb, dev.info.api_version_str
@@ -3952,7 +4028,8 @@ mod tests {
 
             let m_gpu = m_cpu.clone();
             let mut opt_gpu = opt_cpu.clone();
-            let mut sess = super::VulkanTrainingSession::new(dev.clone(), &m_gpu, &opt_gpu).unwrap();
+            let mut sess =
+                super::VulkanTrainingSession::new(dev.clone(), &m_gpu, &opt_gpu).unwrap();
 
             let inp: Vec<usize> = (1..=t).map(|i| i % cfg.vocab_size).collect();
             let tgt: Vec<usize> = (2..=t + 1).map(|i| i % cfg.vocab_size).collect();
@@ -3960,7 +4037,9 @@ mod tests {
             // Warmup GPU
             sess.zero_grads().unwrap();
             let _ = sess.forward_and_backward_sample(&inp, &tgt, 0).unwrap();
-            let _ = sess.step_adamw(&mut opt_gpu.step, t, 1e-3, 0.01, 1.0).unwrap();
+            let _ = sess
+                .step_adamw(&mut opt_gpu.step, t, 1e-3, 0.01, 1.0)
+                .unwrap();
 
             // Mede CPU (forward + backward + AdamW)
             let tc0 = std::time::Instant::now();
@@ -4131,8 +4210,18 @@ mod tests {
         let l16 = fp32_model.forward_last_logits_cached(&prompt[4..], &mut c16);
         let li8 = fp32_model.forward_last_logits_cached(&prompt[4..], &mut ci8);
         for j in 0..cfg.vocab_size {
-            assert!((l32[j] - l16[j]).abs() < 5e-3, "kv fp16 diff: {} vs {}", l32[j], l16[j]);
-            assert!((l32[j] - li8[j]).abs() < 4e-2, "kv int8 diff: {} vs {}", l32[j], li8[j]);
+            assert!(
+                (l32[j] - l16[j]).abs() < 5e-3,
+                "kv fp16 diff: {} vs {}",
+                l32[j],
+                l16[j]
+            );
+            assert!(
+                (l32[j] - li8[j]).abs() < 4e-2,
+                "kv int8 diff: {} vs {}",
+                l32[j],
+                li8[j]
+            );
         }
 
         // 2. Round-trip completo `SMQ1` em todas as 4 precisões + garantia de zero pesos 2D FP32 na RAM
@@ -4200,7 +4289,11 @@ mod tests {
             raw[mid] ^= 0x01;
             std::fs::write(&smq_path, &raw).unwrap();
             let err_msg = load_quantized_checkpoint(&smq_path).unwrap_err();
-            assert!(err_msg.contains("CRC32"), "esperado erro CRC32, obtido: {}", err_msg);
+            assert!(
+                err_msg.contains("CRC32"),
+                "esperado erro CRC32, obtido: {}",
+                err_msg
+            );
             let _ = std::fs::remove_file(&smq_path);
         }
     }
@@ -4218,8 +4311,8 @@ mod tests {
         let real_dir = std::path::Path::new("checkpoints/servermind-neural-v2");
         if real_dir.join("best.bin").is_file() && real_dir.join("tokenizer.json").is_file() {
             let engine_fp32 = crate::inference::NeuralEngine::load_from_dir(real_dir).unwrap();
-            let raw_ds = std::fs::read_to_string("datasets/servermind_corpus_v2.jsonl")
-                .unwrap_or_default();
+            let raw_ds =
+                std::fs::read_to_string("datasets/servermind_corpus_v2.jsonl").unwrap_or_default();
             let mut val_texts = Vec::new();
             for line in raw_ds.lines().filter(|l| !l.trim().is_empty()) {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {

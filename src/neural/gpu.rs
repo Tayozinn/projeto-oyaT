@@ -465,20 +465,21 @@ unsafe fn load_vulkan_entry() -> Option<PfnGetInstanceProcAddr> {
         if sym.is_null() {
             return None;
         }
-        Some(std::mem::transmute::<*mut c_void, PfnGetInstanceProcAddr>(sym))
+        Some(std::mem::transmute::<*mut c_void, PfnGetInstanceProcAddr>(
+            sym,
+        ))
     }
     #[cfg(unix)]
     {
         const RTLD_NOW: i32 = 2;
-        for candidate in [
-            b"libvulkan.so.1\0".as_slice(),
-            b"libvulkan.so\0".as_slice(),
-        ] {
+        for candidate in [b"libvulkan.so.1\0".as_slice(), b"libvulkan.so\0".as_slice()] {
             let lib = dlopen(candidate.as_ptr() as *const i8, RTLD_NOW);
             if !lib.is_null() {
                 let sym = dlsym(lib, b"vkGetInstanceProcAddr\0".as_ptr() as *const i8);
                 if !sym.is_null() {
-                    return Some(std::mem::transmute::<*mut c_void, PfnGetInstanceProcAddr>(sym));
+                    return Some(std::mem::transmute::<*mut c_void, PfnGetInstanceProcAddr>(
+                        sym,
+                    ));
                 }
             }
         }
@@ -569,7 +570,7 @@ struct VkFns {
     destroy_pipeline_layout: unsafe extern "system" fn(VkDevice, VkPipelineLayout, *const c_void),
     create_compute_pipelines: unsafe extern "system" fn(
         VkDevice,
-         u64,
+        u64,
         u32,
         *const VkComputePipelineCreateInfo,
         *const c_void,
@@ -641,11 +642,9 @@ struct VkFns {
         *mut VkFence,
     ) -> VkResult,
     destroy_fence: unsafe extern "system" fn(VkDevice, VkFence, *const c_void),
-    wait_for_fences:
-        unsafe extern "system" fn(VkDevice, u32, *const VkFence, u32, u64) -> VkResult,
+    wait_for_fences: unsafe extern "system" fn(VkDevice, u32, *const VkFence, u32, u64) -> VkResult,
     reset_fences: unsafe extern "system" fn(VkDevice, u32, *const VkFence) -> VkResult,
-    queue_submit:
-        unsafe extern "system" fn(VkQueue, u32, *const VkSubmitInfo, VkFence) -> VkResult,
+    queue_submit: unsafe extern "system" fn(VkQueue, u32, *const VkSubmitInfo, VkFence) -> VkResult,
 }
 
 struct CompiledPipelines {
@@ -762,8 +761,9 @@ impl VulkanDevice {
 
     fn init_best_device() -> Result<Self, String> {
         unsafe {
-            let get_proc = load_vulkan_entry()
-                .ok_or_else(|| "Runtime Vulkan (vulkan-1.dll / libvulkan.so.1) não encontrado.".to_string())?;
+            let get_proc = load_vulkan_entry().ok_or_else(|| {
+                "Runtime Vulkan (vulkan-1.dll / libvulkan.so.1) não encontrado.".to_string()
+            })?;
 
             let create_instance = load_vk_fn!(
                 get_proc,
@@ -895,7 +895,12 @@ impl VulkanDevice {
                     "vkAllocateDescriptorSets",
                     _
                 ),
-                update_descriptor_sets: load_vk_fn!(get_proc, instance, "vkUpdateDescriptorSets", _),
+                update_descriptor_sets: load_vk_fn!(
+                    get_proc,
+                    instance,
+                    "vkUpdateDescriptorSets",
+                    _
+                ),
                 create_command_pool: load_vk_fn!(get_proc, instance, "vkCreateCommandPool", _),
                 destroy_command_pool: load_vk_fn!(get_proc, instance, "vkDestroyCommandPool", _),
                 allocate_command_buffers: load_vk_fn!(
@@ -955,8 +960,7 @@ impl VulkanDevice {
                 let vendor_id = u32::from_le_bytes([b[8], b[9], b[10], b[11]]);
                 let device_id = u32::from_le_bytes([b[12], b[13], b[14], b[15]]);
                 let dev_type = u32::from_le_bytes([b[16], b[17], b[18], b[19]]);
-                let max_sb_range =
-                    u32::from_le_bytes([b[324], b[325], b[326], b[327]]) as u64;
+                let max_sb_range = u32::from_le_bytes([b[324], b[325], b[326], b[327]]) as u64;
                 let max_pc_size = u32::from_le_bytes([b[328], b[329], b[330], b[331]]);
 
                 if api_ver < VK_API_VERSION_1_1 || max_pc_size < PUSH_CONSTANT_BYTES {
@@ -971,7 +975,11 @@ impl VulkanDevice {
                 let device_name = String::from_utf8_lossy(&name_bytes[..nul_pos]).to_string();
 
                 let mut qf_count = 0u32;
-                (fns.get_physical_device_queue_family_properties)(pd, &mut qf_count, ptr::null_mut());
+                (fns.get_physical_device_queue_family_properties)(
+                    pd,
+                    &mut qf_count,
+                    ptr::null_mut(),
+                );
                 if qf_count == 0 {
                     continue;
                 }
@@ -1001,7 +1009,8 @@ impl VulkanDevice {
                 (fns.get_physical_device_memory_properties)(pd, &mut mem_props);
                 let mut vram_bytes = 0u64;
                 for h_idx in 0..(mem_props.memory_heap_count as usize).min(16) {
-                    if (mem_props.memory_heaps[h_idx].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0 {
+                    if (mem_props.memory_heaps[h_idx].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0
+                    {
                         vram_bytes = vram_bytes.max(mem_props.memory_heaps[h_idx].size);
                     }
                 }
@@ -1245,12 +1254,7 @@ impl VulkanDevice {
         Ok(pipeline)
     }
 
-    fn find_memory_type(
-        &self,
-        type_bits: u32,
-        required: u32,
-        preferred_not: u32,
-    ) -> Option<u32> {
+    fn find_memory_type(&self, type_bits: u32, required: u32, preferred_not: u32) -> Option<u32> {
         let count = (self.mem_props.memory_type_count as usize).min(32);
         // 1ª tentativa: satisfaz `required` e evita `preferred_not` (ex.: VRAM dedicada pura)
         if preferred_not != 0 {
@@ -1294,7 +1298,10 @@ impl VulkanDevice {
         let mut buf: VkBuffer = 0;
         let res = (self.fns.create_buffer)(self.device, &b_ci, ptr::null(), &mut buf);
         if res != VK_SUCCESS || buf == 0 {
-            return Err(format!("vkCreateBuffer ({} bytes) falhou ({}).", size_bytes, res));
+            return Err(format!(
+                "vkCreateBuffer ({} bytes) falhou ({}).",
+                size_bytes, res
+            ));
         }
 
         let mut req = VkMemoryRequirements {
@@ -2388,7 +2395,13 @@ impl VulkanTrainingSession {
                 dst_offset: 0,
                 size: (p as u64) * 4,
             };
-            (self.dev.fns.cmd_copy_buffer)(self.cmd_buf, self.arena_buf, self.staging_buf, 1, &copy);
+            (self.dev.fns.cmd_copy_buffer)(
+                self.cmd_buf,
+                self.arena_buf,
+                self.staging_buf,
+                1,
+                &copy,
+            );
             let post_mb = VkMemoryBarrier {
                 s_type: VK_STYPE_MEMORY_BARRIER,
                 p_next: ptr::null(),
@@ -2631,11 +2644,12 @@ impl VulkanTrainingSession {
         }
 
         // 2. Aplica clipping + AdamW por grupo de decaimento sem tocar a RAM
-        let clip_scale = if max_grad_norm.is_finite() && max_grad_norm > 0.0 && grad_norm > max_grad_norm {
-            max_grad_norm / grad_norm.max(1e-8)
-        } else {
-            1.0f32
-        };
+        let clip_scale =
+            if max_grad_norm.is_finite() && max_grad_norm > 0.0 && grad_norm > max_grad_norm {
+                max_grad_norm / grad_norm.max(1e-8)
+            } else {
+                1.0f32
+            };
 
         *optimizer_step += 1;
         let step_i32 = (*optimizer_step).min(i32::MAX as usize) as i32;
@@ -3072,7 +3086,14 @@ impl VulkanTrainingSession {
             }
 
             // MLP W2 + b2 + Residual 2 (`ws_x = x_mid + mlp_out + b2`)
-            self.cmd_matmul_nn(ac.h_act, self.off_weights + wp.w2, self.ws_mlp_out, t, ff, d);
+            self.cmd_matmul_nn(
+                ac.h_act,
+                self.off_weights + wp.w2,
+                self.ws_mlp_out,
+                t,
+                ff,
+                d,
+            );
             self.cmd_barrier_compute();
             {
                 let mut pc = [0u32; PUSH_CONSTANT_WORDS];
@@ -3299,11 +3320,7 @@ impl VulkanTrainingSession {
                 pc2[6] = t;
                 pc2[7] = d;
                 pc2[8] = n_heads;
-                self.dispatch_1d(
-                    self.dev.pipelines.causal_mha_bwd_kv,
-                    &pc2,
-                    (td + 63) / 64,
-                );
+                self.dispatch_1d(self.dev.pipelines.causal_mha_bwd_kv, &pc2, (td + 63) / 64);
             }
             self.cmd_fill_zero(self.ws_d_ln1, td);
             self.cmd_barrier_compute();

@@ -170,6 +170,7 @@ mod tests {
         if let Ok(meta) = fs::metadata(path) {
             let mut perms = meta.permissions();
             if perms.readonly() {
+                #[allow(clippy::permissions_set_readonly_false)]
                 perms.set_readonly(false);
                 let _ = fs::set_permissions(path, perms);
             }
@@ -1668,5 +1669,84 @@ mod tests {
         assert!(report.execution_stats.global_failure_detected);
         assert_eq!(report.execution_stats.succeeded_count, 0);
         assert_eq!(report.execution_stats.error_count, 3);
+    }
+
+    #[test]
+    fn test_cli_help_snapshots_and_exit_codes() {
+        fn norm_newlines(s: &str) -> String {
+            s.replace("\r\n", "\n")
+        }
+
+        let snap_top = norm_newlines(include_str!("../tests/snapshots/help_top_level.txt"));
+        let snap_eval = norm_newlines(include_str!("../tests/snapshots/help_eval.txt"));
+        let snap_train = norm_newlines(include_str!("../tests/snapshots/help_train_neural.txt"));
+        let snap_eval_neural =
+            norm_newlines(include_str!("../tests/snapshots/help_eval_neural.txt"));
+
+        // 1. Sem argumentos -> retorna `None` (abre REPL interativo)
+        let (code_repl, out_repl, err_repl) = run_cli_capture(&["servermind-ai"], None);
+        assert_eq!(code_repl, None);
+        assert!(out_repl.is_empty());
+        assert!(err_repl.is_empty());
+
+        // 2. Top-level `--help` e `-h` -> exit 0 + snapshot exato
+        for flag in ["--help", "-h"] {
+            let (code, out, err) = run_cli_capture(&["servermind-ai", flag], None);
+            assert_eq!(code, Some(0));
+            assert_eq!(norm_newlines(&out), snap_top);
+            assert!(err.is_empty());
+        }
+
+        // 3. `eval --help` e subcomandos `list-cases --help`, `list-models --help`, `run --help`
+        for sub in [
+            &["servermind-ai", "eval", "--help"][..],
+            &["servermind-ai", "eval", "-h"][..],
+            &["servermind-ai", "eval", "help"][..],
+            &["servermind-ai", "eval", "list-cases", "--help"][..],
+            &["servermind-ai", "eval", "list-models", "--help"][..],
+            &["servermind-ai", "eval", "run", "--help"][..],
+        ] {
+            let (code, out, err) = run_cli_capture(sub, None);
+            assert_eq!(code, Some(0), "falha em {:?}", sub);
+            assert_eq!(norm_newlines(&out), snap_eval, "divergência em {:?}", sub);
+            assert!(err.is_empty());
+        }
+
+        // 4. `train-neural --help` e `-h` -> exit 0 + snapshot exato
+        for flag in ["--help", "-h"] {
+            let (code, out, err) = run_cli_capture(&["servermind-ai", "train-neural", flag], None);
+            assert_eq!(code, Some(0));
+            assert_eq!(norm_newlines(&out), snap_train);
+            assert!(err.is_empty());
+        }
+
+        // 5. `eval-neural --help` e `-h` -> exit 0 + snapshot exato
+        for flag in ["--help", "-h"] {
+            let (code, out, err) = run_cli_capture(&["servermind-ai", "eval-neural", flag], None);
+            assert_eq!(code, Some(0));
+            assert_eq!(norm_newlines(&out), snap_eval_neural);
+            assert!(err.is_empty());
+        }
+
+        // 6. Códigos de saída de erro de uso (`exit 2`) em todos os subcomandos
+        for bad_args in [
+            &["servermind-ai", "--help", "extra"][..],
+            &["servermind-ai", "subcomando-inexistente"][..],
+            &["servermind-ai", "eval"][..],
+            &["servermind-ai", "eval", "--help", "extra"][..],
+            &["servermind-ai", "eval", "--flag-invalida"][..],
+            &["servermind-ai", "eval", "sub-invalido"][..],
+            &["servermind-ai", "train-neural", "--flag-inexistente"][..],
+            &["servermind-ai", "eval-neural", "--flag-inexistente"][..],
+        ] {
+            let (code, out, err) = run_cli_capture(bad_args, None);
+            assert_eq!(code, Some(2), "esperado exit 2 para {:?}", bad_args);
+            assert!(
+                out.is_empty(),
+                "stdout deveria estar vazio em {:?}",
+                bad_args
+            );
+            assert!(!err.trim().is_empty(), "stderr vazio para {:?}", bad_args);
+        }
     }
 }

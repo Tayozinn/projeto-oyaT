@@ -326,7 +326,7 @@ fn is_blank(s: &str) -> bool {
 
 fn is_valid_case_id(id: &str) -> bool {
     let len_ok = (3..=40).contains(&id.len());
-    let starts_ok = id.chars().next().map_or(false, |c| c.is_ascii_lowercase());
+    let starts_ok = id.chars().next().is_some_and(|c| c.is_ascii_lowercase());
     let chars_ok = id
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
@@ -709,10 +709,12 @@ pub fn compute_sha256_hex(data: &[u8]) -> String {
     }
     message.extend_from_slice(&bit_len.to_be_bytes());
 
-    for block in message.chunks_exact(64) {
+    let (blocks, _) = message.as_chunks::<64>();
+    for block in blocks {
         let mut w = [0u32; 64];
-        for (i, word) in block.chunks_exact(4).enumerate() {
-            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        let (words, _) = block.as_chunks::<4>();
+        for (i, word) in words.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*word);
         }
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
@@ -866,8 +868,8 @@ mod tests {
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
         }
         assert_ne!(
-            compute_sha256_hex(&vec![b'a'; 55]),
-            compute_sha256_hex(&vec![b'a'; 56])
+            compute_sha256_hex(&[b'a'; 55]),
+            compute_sha256_hex(&[b'a'; 56])
         );
     }
 
@@ -978,7 +980,8 @@ mod tests {
 
     #[test]
     fn rejects_empty_fields() {
-        let mutations: Vec<Box<dyn Fn(&mut Value)>> = vec![
+        type CaseMutator = Box<dyn Fn(&mut Value)>;
+        let mutations: Vec<CaseMutator> = vec![
             Box::new(|c: &mut Value| c["title"] = json!("  ")),
             Box::new(|c: &mut Value| c["question"] = json!("")),
             Box::new(|c: &mut Value| c["context"] = json!("   ")),

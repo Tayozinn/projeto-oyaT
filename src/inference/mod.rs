@@ -4,6 +4,8 @@
 //! e o motor neural próprio do ServerMind (`BpeTokenizer` + `ServerMindTransformer`),
 //! mantendo a CLI, os guardrails de segurança e a suíte de avaliação funcionando.
 
+#![allow(clippy::large_enum_variant, clippy::manual_div_ceil)]
+
 use crate::infrastructure::RuntimeBudget;
 use crate::models::{Message, Role};
 use crate::neural::{
@@ -228,8 +230,7 @@ impl NeuralEngine {
         cfg: GenerationConfig,
         mut on_chunk: Option<&mut dyn FnMut(&str)>,
     ) -> (String, usize) {
-        let prompt_ids =
-            self.build_prompt_ids(request_messages, user_prompt, cfg.max_new_tokens);
+        let prompt_ids = self.build_prompt_ids(request_messages, user_prompt, cfg.max_new_tokens);
         let stop_tokens = self.stop_token_ids();
 
         let seed = cfg.seed.unwrap_or_else(|| {
@@ -419,13 +420,14 @@ fn prefill_scratch_bytes_for(cfg: &TransformerConfig) -> usize {
     let d = cfg.d_model;
     let ff = cfg.d_ff;
     let v = cfg.vocab_size;
-    let elems = t
-        .saturating_mul(8 * d + ff + 1)
-        .saturating_add(v);
+    let elems = t.saturating_mul(8 * d + ff + 1).saturating_add(v);
     elems.saturating_mul(4)
 }
 
-fn quantized_weight_bytes_for(cfg: &TransformerConfig, prec: crate::neural::WeightPrecision) -> usize {
+fn quantized_weight_bytes_for(
+    cfg: &TransformerConfig,
+    prec: crate::neural::WeightPrecision,
+) -> usize {
     let d = cfg.d_model;
     let ff = cfg.d_ff;
     let v = cfg.vocab_size;
@@ -439,9 +441,9 @@ fn quantized_weight_bytes_for(cfg: &TransformerConfig, prec: crate::neural::Weig
             crate::neural::WeightPrecision::Fp16 | crate::neural::WeightPrecision::Bf16 => {
                 rows.saturating_mul(cols).saturating_mul(2)
             }
-            crate::neural::WeightPrecision::Int8 => {
-                rows.saturating_mul(4).saturating_add(rows.saturating_mul(cols))
-            }
+            crate::neural::WeightPrecision::Int8 => rows
+                .saturating_mul(4)
+                .saturating_add(rows.saturating_mul(cols)),
             crate::neural::WeightPrecision::Int4 => {
                 let g = crate::neural::quant::INT4_GROUP_SIZE;
                 let blocks = (cols + g - 1) / g;
@@ -466,8 +468,13 @@ fn peek_checkpoint_runtime_bytes(
     is_smq: bool,
     kv_precision: KvCachePrecision,
 ) -> Result<usize, String> {
-    let mut f = File::open(path)
-        .map_err(|e| format!("Falha ao abrir '{}' para inspeção de memória: {}", path.display(), e))?;
+    let mut f = File::open(path).map_err(|e| {
+        format!(
+            "Falha ao abrir '{}' para inspeção de memória: {}",
+            path.display(),
+            e
+        )
+    })?;
     let mut hdr = [0u8; 12];
     f.read_exact(&mut hdr)
         .map_err(|_| format!("Cabeçalho truncado em '{}'.", path.display()))?;
@@ -478,7 +485,10 @@ fn peek_checkpoint_runtime_bytes(
     }
     let meta_len = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]) as usize;
     if meta_len == 0 || meta_len > 1_048_576 {
-        return Err(format!("Tamanho de metadados inválido em '{}'.", path.display()));
+        return Err(format!(
+            "Tamanho de metadados inválido em '{}'.",
+            path.display()
+        ));
     }
     let mut meta_bytes = vec![0u8; meta_len];
     f.read_exact(&mut meta_bytes)
@@ -691,15 +701,21 @@ mod tests {
     #[test]
     fn sm008_low_end_8gb_budget_blocks_oversized_and_certifies_cpu_only_e2e_pipeline() {
         use crate::infrastructure::{RuntimeBudget, RuntimeProfileKind};
-        use crate::neural::ops::{effective_worker_threads, set_max_active_threads, worker_threads};
+        use crate::neural::ops::{
+            effective_worker_threads, set_max_active_threads, worker_threads,
+        };
         use crate::neural::quant::{QuantMatrix, WeightPrecision};
         use crate::neural::{quantize_model_in_memory, save_quantized_checkpoint, ComputeDevice};
         use crate::training::{pack_eval_sequences, pack_sequences, Trainer, TrainingConfig};
 
         // 1. Equivalência bit-a-bit entre `QuantMatrix::matmul_nn` multi-thread (`m=14`) e single-thread (`threads=1`)
         let (m, k, n) = (14usize, 131usize, 137usize); // m*k*n = 251_258 >= 131_072
-        let a: Vec<f32> = (0..(m * k)).map(|i| ((i % 23) as f32 - 11.0) * 0.05).collect();
-        let w: Vec<f32> = (0..(k * n)).map(|i| ((i % 31) as f32 - 15.0) * 0.03).collect();
+        let a: Vec<f32> = (0..(m * k))
+            .map(|i| ((i % 23) as f32 - 11.0) * 0.05)
+            .collect();
+        let w: Vec<f32> = (0..(k * n))
+            .map(|i| ((i % 31) as f32 - 15.0) * 0.03)
+            .collect();
         for prec in [
             WeightPrecision::Fp16,
             WeightPrecision::Bf16,
@@ -812,8 +828,7 @@ mod tests {
         // Define orçamento entre o tamanho do pacote `INT4` + KV FP16 e o tamanho do `FP32`!
         let mut tight_budget = RuntimeBudget::low_end_8gb();
         assert_eq!(tight_budget.profile, RuntimeProfileKind::LowEnd8Gb);
-        let int4_probe =
-            NeuralEngine::load_from_dir_with_budget(&int4_dir, tight_budget).unwrap();
+        let int4_probe = NeuralEngine::load_from_dir_with_budget(&int4_dir, tight_budget).unwrap();
         let int4_rt_bytes = int4_probe.estimated_runtime_bytes();
         assert!(int4_rt_bytes < fp32_rt_bytes);
 
@@ -846,8 +861,12 @@ mod tests {
         };
         let mut streamed = String::new();
         let mut cb = |s: &str| streamed.push_str(s);
-        let (out1, n1) =
-            int8_low.generate_with_config(&[], "Como checar portas abertas no Linux?", gcfg, Some(&mut cb));
+        let (out1, n1) = int8_low.generate_with_config(
+            &[],
+            "Como checar portas abertas no Linux?",
+            gcfg,
+            Some(&mut cb),
+        );
         let (out2, n2) =
             int8_low.generate_with_config(&[], "Como checar portas abertas no Linux?", gcfg, None);
         assert_eq!(out1, out2);
@@ -904,8 +923,10 @@ mod tests {
                 + super::kv_cache_bytes_for(&cfg, KvCachePrecision::Fp16)
                 + super::prefill_scratch_bytes_for(&cfg)) as f64
                 / (1024.0 * 1024.0);
-            let budget_mb =
-                RuntimeBudget::low_end_8gb().max_inference_ram_bytes.unwrap() as f64 / (1024.0 * 1024.0);
+            let budget_mb = RuntimeBudget::low_end_8gb()
+                .max_inference_ram_bytes
+                .unwrap() as f64
+                / (1024.0 * 1024.0);
 
             println!(
                 "SM008_PREFILL_13.9M [{:<4}, T=128, threads=1->{}]: 1T={:.2} ms -> MT={:.2} ms (speedup={:.2}x) | total_runtime_ram={:.2} MB / {:.0} MB budget ({:.2}%)",

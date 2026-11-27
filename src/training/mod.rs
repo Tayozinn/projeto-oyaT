@@ -9,12 +9,14 @@
 //! - Recuperação de treinamentos interrompidos (`resume_from_checkpoint`)
 //! - Comparação entre execuções (`compare_training_runs`).
 
-use crate::neural::gpu::{GPU_AUTO_MIN_PARAMS};
+#![allow(clippy::manual_is_multiple_of, clippy::type_complexity)]
+
+use crate::neural::gpu::GPU_AUTO_MIN_PARAMS;
 use crate::neural::{
     load_checkpoint, save_checkpoint, AdamWState, ComputeDevice, ServerMindTransformer,
     TrainingWorkspace, TransformerGrads, VulkanDevice, VulkanTrainingSession,
 };
-use crate::tokenizer::{ASSISTANT_TOKEN, BpeTokenizer, SYSTEM_TOKEN, USER_TOKEN};
+use crate::tokenizer::{BpeTokenizer, ASSISTANT_TOKEN, SYSTEM_TOKEN, USER_TOKEN};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -235,7 +237,8 @@ pub struct TimedSessionOptions<'a> {
     pub eval_every_secs: Option<u64>,
     pub cancel_flag: Option<Arc<AtomicBool>>,
     pub install_ctrlc_handler: bool,
-    pub on_milestone: Option<&'a mut dyn FnMut(&ServerMindTransformer, &TrainStepMetrics, f64, Duration)>,
+    pub on_milestone:
+        Option<&'a mut dyn FnMut(&ServerMindTransformer, &TrainStepMetrics, f64, Duration)>,
     pub masked_train: Option<&'a [MaskedSequence]>,
     pub masked_val: Option<&'a [MaskedSequence]>,
 }
@@ -341,12 +344,7 @@ fn pack_sequences_internal(
     windows
 }
 
-pub fn cosine_lr_temporal(
-    elapsed: Duration,
-    target: Duration,
-    max_lr: f32,
-    min_lr: f32,
-) -> f32 {
+pub fn cosine_lr_temporal(elapsed: Duration, target: Duration, max_lr: f32, min_lr: f32) -> f32 {
     let total = target.as_secs_f64().max(1e-3);
     let cur = elapsed.as_secs_f64().clamp(0.0, total);
     let warmup = (total * 0.03).clamp(0.05, 600.0).min(total * 0.25);
@@ -551,7 +549,11 @@ impl Trainer {
             ComputeDevice::Cpu => None,
             ComputeDevice::Gpu => {
                 let dev = VulkanDevice::global()?;
-                Some(VulkanTrainingSession::new(dev, &self.model, &self.optimizer)?)
+                Some(VulkanTrainingSession::new(
+                    dev,
+                    &self.model,
+                    &self.optimizer,
+                )?)
             }
             ComputeDevice::Auto => {
                 if self.model.config.total_params() >= GPU_AUTO_MIN_PARAMS {
@@ -605,9 +607,13 @@ impl Trainer {
         let mut order = shuffled_indices(train_len, 0x5EED_2026_u64 ^ (epoch as u64));
 
         // Subamostragem uniforme determinística das janelas de validação para evitar gargalo em corpora grandes.
-        let eval_subset: Vec<Vec<usize>> = select_eval_windows(val_windows, self.config.max_val_windows);
+        let eval_subset: Vec<Vec<usize>> =
+            select_eval_windows(val_windows, self.config.max_val_windows);
         let masked_eval_subset: Option<Vec<MaskedSequence>> = session_opts.masked_val.map(|mv| {
-            if mv.is_empty() || self.config.max_val_windows == 0 || mv.len() <= self.config.max_val_windows {
+            if mv.is_empty()
+                || self.config.max_val_windows == 0
+                || mv.len() <= self.config.max_val_windows
+            {
                 mv.to_vec()
             } else {
                 let mut sub = Vec::with_capacity(self.config.max_val_windows);
@@ -1163,7 +1169,10 @@ mod tests {
             }
             let eval_wins = pack_eval_sequences(&tok, &corpus, seq_len);
             if eval_wins.len() >= 2 {
-                assert_ne!(eval_wins[eval_wins.len() - 1], eval_wins[eval_wins.len() - 2]);
+                assert_ne!(
+                    eval_wins[eval_wins.len() - 1],
+                    eval_wins[eval_wins.len() - 2]
+                );
             }
         }
 
@@ -1207,7 +1216,10 @@ mod tests {
             .train_with_progress(&wins, &wins, tok.pad_id(), Some(&mut cb))
             .unwrap();
         assert_eq!(progress_hits, 2);
-        assert!(report.history.iter().all(|h| h.grad_norm > 0.0 && h.grad_norm.is_finite()));
+        assert!(report
+            .history
+            .iter()
+            .all(|h| h.grad_norm > 0.0 && h.grad_norm.is_finite()));
 
         // O `best.bin` corrompido antigo foi substituído por um checkpoint válido
         assert!(crate::neural::load_checkpoint(&dir.join("best.bin")).is_ok());
@@ -1279,12 +1291,7 @@ mod tests {
             &mut out_buf,
             &mut err_buf,
         );
-        assert_eq!(
-            code,
-            0,
-            "stderr={}",
-            String::from_utf8_lossy(&err_buf)
-        );
+        assert_eq!(code, 0, "stderr={}", String::from_utf8_lossy(&err_buf));
         assert!(out_ckpt.join("best.bin").is_file());
         assert!(out_ckpt.join("latest.bin").is_file());
         assert!(out_ckpt.join("training_evolution.md").is_file());
@@ -1375,9 +1382,16 @@ mod tests {
                 in_asst = false;
             }
             if !in_asst {
-                assert_eq!(tgt, pad_id, "posição de prompt/usuário {} vazou na loss!", pos);
+                assert_eq!(
+                    tgt, pad_id,
+                    "posição de prompt/usuário {} vazou na loss!",
+                    pos
+                );
             } else if tgt != pad_id {
-                assert_ne!(tgt, user_id, "modelo não deve ser penalizado para prever <user>");
+                assert_ne!(
+                    tgt, user_id,
+                    "modelo não deve ser penalizado para prever <user>"
+                );
                 unmasked_count += 1;
             }
         }

@@ -352,8 +352,9 @@ pub(super) fn parallel_disjoint_rows_mut<F>(
         // `[row_start, row_start + rows)` são estritamente disjuntos e contidos em
         // `0..total_rows`, com `total_rows * row_width <= c.len()`. A barreira de `execute`
         // aguarda todos os workers antes de liberar o empréstimo exclusivo `&mut [f32]`.
-        let c_sub =
-            unsafe { std::slice::from_raw_parts_mut((c_addr as *mut f32).add(elem_offset), elem_len) };
+        let c_sub = unsafe {
+            std::slice::from_raw_parts_mut((c_addr as *mut f32).add(elem_offset), elem_len)
+        };
         body(row_start, rows, c_sub);
     });
 }
@@ -479,11 +480,17 @@ pub fn matmul_nn(a: &[f32], b: &[f32], c: &mut [f32], m: usize, k: usize, n: usi
             let full_blocks = n / 32;
             let main_cols = full_blocks * 32;
             if full_blocks >= 2 {
-                parallel_disjoint_rows_mut(&mut c[..main_cols], full_blocks, 32, 1, |blk_start, blk_cnt, c_sub| {
-                    let col_start = blk_start * 32;
-                    let cols = blk_cnt * 32;
-                    gemv_col_slice(&a[..k], b, c_sub, k, n, col_start, cols, use_avx);
-                });
+                parallel_disjoint_rows_mut(
+                    &mut c[..main_cols],
+                    full_blocks,
+                    32,
+                    1,
+                    |blk_start, blk_cnt, c_sub| {
+                        let col_start = blk_start * 32;
+                        let cols = blk_cnt * 32;
+                        gemv_col_slice(&a[..k], b, c_sub, k, n, col_start, cols, use_avx);
+                    },
+                );
                 if main_cols < n {
                     let rem = n - main_cols;
                     gemv_col_slice(
@@ -584,7 +591,8 @@ fn gemv_col_slice(
             let kc_end = (kc + TILE_KC).min(k);
             for kk in kc..kc_end {
                 let av = a_row[kk];
-                let b_sub = &b[kk * n_stride + col_start + jc..kk * n_stride + col_start + jc + jc_len];
+                let b_sub =
+                    &b[kk * n_stride + col_start + jc..kk * n_stride + col_start + jc + jc_len];
                 let c_sub = &mut c_out[jc..jc + jc_len];
                 for (cv, &bv) in c_sub.iter_mut().zip(b_sub.iter()) {
                     *cv += av * bv;
@@ -833,7 +841,9 @@ unsafe fn gemv_col_slice_avx2(
     col_start: usize,
     cols: usize,
 ) {
-    assert!(a_row.len() >= k && c_out.len() >= cols && b.len() >= (k - 1) * n_stride + col_start + cols);
+    assert!(
+        a_row.len() >= k && c_out.len() >= cols && b.len() >= (k - 1) * n_stride + col_start + cols
+    );
     let a_ptr = a_row.as_ptr();
     let b_ptr = b.as_ptr();
     let c_ptr = c_out.as_mut_ptr();

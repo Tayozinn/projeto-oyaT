@@ -13,7 +13,9 @@
 //!    - Inclui kernels escalares de referência permanentes (Regra 3) e kernels acelerados em **AVX2 + FMA**.
 //! 3. Formato binário versionado de distribuição **`SMQ1`** com escrita atômica e checksum **CRC32**.
 
-use super::ops::{effective_worker_threads, has_avx2_fma, parallel_disjoint_rows_mut, worker_threads};
+use super::ops::{
+    effective_worker_threads, has_avx2_fma, parallel_disjoint_rows_mut, worker_threads,
+};
 use super::{
     atomic_rename_with_retry, make_atomic_temp_path, Crc32Hasher, ServerMindTransformer,
     TransformerConfig,
@@ -295,7 +297,8 @@ impl QuantMatrix {
 
                 for r in 0..rows {
                     let row = &src[r * cols..(r + 1) * cols];
-                    let p_row = &mut packed[r * packed_bytes_per_row..(r + 1) * packed_bytes_per_row];
+                    let p_row =
+                        &mut packed[r * packed_bytes_per_row..(r + 1) * packed_bytes_per_row];
                     for b in 0..blocks_per_row {
                         let c_start = b * INT4_GROUP_SIZE;
                         let c_end = (c_start + INT4_GROUP_SIZE).min(cols);
@@ -320,7 +323,8 @@ impl QuantMatrix {
                                 if c % 2 == 0 {
                                     p_row[byte_idx] = (p_row[byte_idx] & 0xF0) | (nib & 0x0F);
                                 } else {
-                                    p_row[byte_idx] = (p_row[byte_idx] & 0x0F) | ((nib & 0x0F) << 4);
+                                    p_row[byte_idx] =
+                                        (p_row[byte_idx] & 0x0F) | ((nib & 0x0F) << 4);
                                 }
                             }
                         }
@@ -339,7 +343,6 @@ impl QuantMatrix {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     #[allow(dead_code)]
     pub fn precision(&self) -> WeightPrecision {
         match self {
@@ -399,7 +402,8 @@ impl QuantMatrix {
                 packed,
             } => {
                 assert!(row_idx < *rows && out.len() >= *cols);
-                let p_row = &packed[row_idx * packed_bytes_per_row..(row_idx + 1) * packed_bytes_per_row];
+                let p_row =
+                    &packed[row_idx * packed_bytes_per_row..(row_idx + 1) * packed_bytes_per_row];
                 let sc_row = &scales_f16[row_idx * blocks_per_row..(row_idx + 1) * blocks_per_row];
                 for b in 0..*blocks_per_row {
                     let sc = f16_to_f32(sc_row[b]);
@@ -792,10 +796,7 @@ unsafe fn gemv_int4_avx2(
                 // Desempacota 16 bytes -> 32 valores i8 intercalados `(even, odd)` em 2 registradores XMM
                 let raw16 = _mm_loadu_si128(pr.add(b * 16) as *const __m128i);
                 let even = _mm_sub_epi8(_mm_and_si128(raw16, low_mask), bias8);
-                let odd = _mm_sub_epi8(
-                    _mm_and_si128(_mm_srli_epi16::<4>(raw16), low_mask),
-                    bias8,
-                );
+                let odd = _mm_sub_epi8(_mm_and_si128(_mm_srli_epi16::<4>(raw16), low_mask), bias8);
                 // Intercala bytes `even` e `odd` restaurando a ordem exata `c_start .. c_start + 32`
                 let lo16 = _mm_unpacklo_epi8(even, odd); // elementos 0..15
                 let hi16 = _mm_unpackhi_epi8(even, odd); // elementos 16..31
@@ -857,9 +858,14 @@ pub struct QuantizedModelData {
 }
 
 impl QuantizedModelData {
-    pub fn from_fp32_model(model: &ServerMindTransformer, prec: WeightPrecision) -> Result<Self, String> {
+    pub fn from_fp32_model(
+        model: &ServerMindTransformer,
+        prec: WeightPrecision,
+    ) -> Result<Self, String> {
         if model.is_quantized() {
-            return Err("O modelo de origem já está quantizado; forneça um checkpoint FP32.".to_string());
+            return Err(
+                "O modelo de origem já está quantizado; forneça um checkpoint FP32.".to_string(),
+            );
         }
         let d = model.config.d_model;
         let ff = model.config.d_ff;
@@ -963,8 +969,7 @@ pub fn save_quantized_checkpoint(
 
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => {
-            fs::create_dir_all(p)
-                .map_err(|e| format!("Falha ao criar pasta {:?}: {}", p, e))?;
+            fs::create_dir_all(p).map_err(|e| format!("Falha ao criar pasta {:?}: {}", p, e))?;
             p
         }
         _ => Path::new("."),
@@ -1204,12 +1209,8 @@ fn read_f32_slice_crc<R: Read>(
         r.read_exact(&mut buf[..nb]).map_err(|e| e.to_string())?;
         crc.update(&buf[..nb]);
         for (i, slot) in chunk.iter_mut().enumerate() {
-            let v = f32::from_le_bytes([
-                buf[i * 4],
-                buf[i * 4 + 1],
-                buf[i * 4 + 2],
-                buf[i * 4 + 3],
-            ]);
+            let v =
+                f32::from_le_bytes([buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2], buf[i * 4 + 3]]);
             if !v.is_finite() {
                 return Err("Valor não-finito detectado ao carregar SMQ1.".to_string());
             }

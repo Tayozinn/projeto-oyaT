@@ -1,0 +1,9 @@
+SERVERMIND AI - Assistente Consultivo Local
+
+Uso:
+  servermind-ai                    Inicia o chat interativo local (usa config.toml e servermind.db)
+  servermind-ai eval --help        Executa e gerencia avaliações offline reproduzíveis (sem tocar em servermind.db)
+  servermind-ai train-neural       Treina o modelo neural próprio (--marathon [6h], --max-duration, --resume)
+  servermind-ai eval-neural        Avalia ou quantiza (--quantize-out, --bits, --kv-cache) um modelo neural próprio
+  servermind-ai hw                 Inspeciona hardware local e benchmark de CPU
+  servermind-ai --help             Exibe esta ajuda

@@ -3,6 +3,8 @@
 //! Avalia capacidades locais (CPU, RAM, GPU/Vulkan) no Windows/Linux sem presumir
 //! aceleração incompatível e fornece estimativas de memória para configurações neurais.
 
+#![allow(clippy::manual_div_ceil)]
+
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -134,7 +136,8 @@ pub fn probe_hardware() -> HardwareProfile {
     let vulkan_available = vk_adapter.is_some() || command_exists("vulkaninfo");
     let rocm_available = command_exists("rocminfo") || std::env::var("ROCM_PATH").is_ok();
 
-    let (detected_gpu_hint, vulkan_device_name, vulkan_vram_mb) = if let Some(ref info) = vk_adapter {
+    let (detected_gpu_hint, vulkan_device_name, vulkan_vram_mb) = if let Some(ref info) = vk_adapter
+    {
         (
             format!(
                 "{} ({} MB VRAM, Vulkan {})",
@@ -453,7 +456,9 @@ mod tests {
         assert!(!hw.os.is_empty());
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
-            let tot = hw.total_system_ram_mb.expect("RAM total deve ser detectada");
+            let tot = hw
+                .total_system_ram_mb
+                .expect("RAM total deve ser detectada");
             let avail = hw
                 .available_system_ram_mb
                 .expect("RAM livre deve ser detectada");
