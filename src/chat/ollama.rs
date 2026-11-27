@@ -11,6 +11,7 @@ use std::time::Duration;
 const MAX_DIAGNOSTIC_CHARS: usize = 160;
 
 /// Cliente HTTP síncrono para comunicação exclusiva com a API local do Ollama.
+#[derive(Clone)]
 pub struct OllamaClient {
     base_url: String,
     timeout_secs: u64,
@@ -469,21 +470,6 @@ impl OllamaClient {
                 reported_model,
             },
             None => OllamaChatOutcome::EmptyResponse { reported_model },
-        }
-    }
-
-    /// Envia o histórico da conversa atual ao endpoint `/api/chat` do Ollama e retorna a resposta do modelo.
-    pub fn send_chat(&self, model: &str, messages: &[Message]) -> Result<String, String> {
-        match self.send_chat_with_timeout(model, messages, None) {
-            OllamaChatOutcome::Succeeded { content, .. } => Ok(content),
-            OllamaChatOutcome::EmptyResponse { .. } => Err(format!(
-                "O modelo '{}' no Ollama respondeu sem conteúdo de mensagem (resposta vazia).\n\
-                 Como resolver: tente reenviar sua mensagem, consulte `:status` ou selecione outro modelo com `:models`.",
-                model
-            )),
-            OllamaChatOutcome::Timeout { message } | OllamaChatOutcome::Error { message, .. } => {
-                Err(message)
-            }
         }
     }
 

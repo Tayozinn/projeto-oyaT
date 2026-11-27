@@ -35,11 +35,12 @@ pub(crate) fn run_terminal_loop_with_io(
     );
 
     loop {
+        let model_lbl = session.active_model_label();
         let _ = write!(
             out,
             "\n[Conversa #{} | {}] Administrador > ",
             session.current_conversation().id,
-            session.config().model
+            model_lbl
         );
         let _ = out.flush();
 
@@ -645,7 +646,7 @@ fn print_help(out: &mut dyn Write) {
     );
     let _ = writeln!(
         out,
-        "  :backend [ollama|neural [dir]] - Alterna entre Ollama (fallback) e ServerMind Neural próprio"
+        "  :backend [ollama|neural|claude|gemini|groq|openrouter|openai] [arg] - Alterna o backend ativo"
     );
     let _ = writeln!(
         out,
@@ -1192,7 +1193,9 @@ fn handle_memories_command(
     }
 }
 
-fn resolve_default_neural_checkpoint_dir(base_dir: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn resolve_default_neural_checkpoint_dir(
+    base_dir: &std::path::Path,
+) -> std::path::PathBuf {
     const CANDIDATES: &[&str] = &[
         "checkpoints/servermind-neural-110m-int8",
         "checkpoints/servermind-neural-110m",
@@ -1227,32 +1230,58 @@ fn handle_backend_command(
     let default_dir = resolve_default_neural_checkpoint_dir(&base_dir);
     let trimmed = arg.trim();
     if trimmed.is_empty() {
-        let _ = writeln!(out, "Backend ativo: {}", session.backend_kind().as_str());
+        let mb = session.active_backend().as_model_backend();
         let _ = writeln!(
             out,
-            "Uso: :backend ollama  |  :backend neural [diretorio_checkpoint] (padrão detectado: '{}')",
+            "Backend ativo : {} ({}) | modelo='{}' | endpoint='{}' | remoto={}",
+            mb.backend_id(),
+            mb.display_name(),
+            session.active_model_label(),
+            mb.endpoint_url(),
+            mb.is_remote()
+        );
+        let _ = writeln!(
+            out,
+            "Uso local     : :backend ollama  |  :backend neural [diretorio_checkpoint] (padrão: '{}')",
             default_dir.display()
+        );
+        let _ = writeln!(
+            out,
+            "Uso remoto    : :backend claude [modelo]  |  :backend gemini [modelo]  |  :backend groq [modelo]  |  :backend openrouter [modelo]  |  :backend openai [modelo]"
+        );
+        let _ = writeln!(
+            out,
+            "Variáveis API : ANTHROPIC_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY ou SERVERMIND_OPENAI_API_KEY"
         );
         return;
     }
+
     let mut parts = trimmed.splitn(2, char::is_whitespace);
     let kind_str = parts.next().unwrap_or("");
-    let resolved_dir = parts
-        .next()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| session.config().resolve_path(s))
-        .unwrap_or(default_dir);
+    let opt_arg = parts.next().map(|s| s.trim()).filter(|s| !s.is_empty());
 
-    match crate::neural::inference::InferenceBackendKind::parse(kind_str) {
-        Ok(crate::neural::inference::InferenceBackendKind::Ollama) => {
+    let parsed_kind = match crate::chat::backend::BackendKind::parse(kind_str) {
+        Ok(k) => k,
+        Err(e) => {
+            let _ = writeln!(err, "{}", e);
+            return;
+        }
+    };
+
+    match parsed_kind {
+        crate::chat::backend::BackendKind::Ollama => {
             session.use_ollama_backend();
             let _ = writeln!(
                 out,
-                "Backend alterado para 'ollama' (fallback local preservado)."
+                "Backend alterado para 'ollama' (100% local via loopback '{}', modelo '{}').",
+                session.config().ollama_url,
+                session.config().model
             );
         }
-        Ok(crate::neural::inference::InferenceBackendKind::ServerMindNeural) => {
+        crate::chat::backend::BackendKind::Neural => {
+            let resolved_dir = opt_arg
+                .map(|s| session.config().resolve_path(s))
+                .unwrap_or(default_dir);
             match session.use_neural_backend(&resolved_dir) {
                 Ok((step, best_val)) => {
                     let _ = writeln!(
@@ -1268,8 +1297,58 @@ fn handle_backend_command(
                 }
             }
         }
-        Err(e) => {
-            let _ = writeln!(err, "{}", e);
+        crate::chat::backend::BackendKind::Claude => match session.use_claude_backend(opt_arg) {
+            Ok((endpoint, model_name, limits)) => {
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    crate::chat::backend::format_remote_backend_banner(
+                        "Anthropic Claude API",
+                        &endpoint,
+                        &model_name,
+                        limits,
+                    )
+                );
+            }
+            Err(e) => {
+                let _ = writeln!(err, "[ERRO AO ATIVAR BACKEND CLAUDE]\n{}", e);
+            }
+        },
+        remote_preset_kind => {
+            let preset = match remote_preset_kind {
+                crate::chat::backend::BackendKind::Gemini => {
+                    crate::chat::backend::OpenAiProviderPreset::Gemini
+                }
+                crate::chat::backend::BackendKind::Groq => {
+                    crate::chat::backend::OpenAiProviderPreset::Groq
+                }
+                crate::chat::backend::BackendKind::OpenRouter => {
+                    crate::chat::backend::OpenAiProviderPreset::OpenRouter
+                }
+                _ => crate::chat::backend::OpenAiProviderPreset::OpenAi,
+            };
+            match session.use_openai_compat_backend(preset, opt_arg) {
+                Ok((endpoint, model_name, limits)) => {
+                    let _ = writeln!(
+                        out,
+                        "{}",
+                        crate::chat::backend::format_remote_backend_banner(
+                            preset.display_name(),
+                            &endpoint,
+                            &model_name,
+                            limits,
+                        )
+                    );
+                }
+                Err(e) => {
+                    let _ = writeln!(
+                        err,
+                        "[ERRO AO ATIVAR BACKEND REMOTO ({})]\n{}",
+                        preset.backend_id(),
+                        e
+                    );
+                }
+            }
         }
     }
 }
@@ -1716,5 +1795,105 @@ mod tests {
             "nenhum arquivo deveria ser criado no CWD externo, encontrado: {:?}",
             cwd_entries
         );
+    }
+
+    #[test]
+    fn test_phase3_c3_c4_repl_remote_backend_banner_and_secret_redaction() {
+        use std::io::{Read, Write as IoWrite};
+        use std::net::{Shutdown, TcpListener};
+
+        let _lock = lock_env_cwd();
+        let temp = TempDirGuard::new("phase3_repl_remote");
+        let _env = EnvVarGuard::capture(&["ANTHROPIC_API_KEY", "SERVERMIND_ANTHROPIC_BASE_URL"]);
+
+        // Servidor HTTP local simulando `/v1/messages` da Anthropic
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mock_claude_url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let claude_thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 1024];
+            let header_end = loop {
+                let n = stream.read(&mut tmp).unwrap();
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break pos + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&buf[..header_end]);
+            let content_len = headers
+                .lines()
+                .find_map(|l| {
+                    let (k, v) = l.split_once(':')?;
+                    if k.trim().eq_ignore_ascii_case("content-length") {
+                        v.trim().parse::<usize>().ok()
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
+            while buf.len() < header_end + content_len {
+                let n = stream.read(&mut tmp).unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+            }
+            let raw_req = String::from_utf8_lossy(&buf).into_owned();
+            let body = serde_json::json!({
+                "id": "msg_repl_1",
+                "model": "claude-sonnet-4-0",
+                "content": [{ "type": "text", "text": "Use `df -h` em modo somente leitura para inspecionar o disco." }]
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+            let _ = stream.shutdown(Shutdown::Write);
+            raw_req
+        });
+
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test-key-nao-persistida");
+        std::env::set_var("SERVERMIND_ANTHROPIC_BASE_URL", &mock_claude_url);
+
+        let mock_ollama = MockOllamaServer::from_replies(vec![]);
+        let mut session = build_session_in_dir(&temp.path, &mock_ollama.base_url);
+
+        // Padrão inicial deve continuar sendo `ollama` (`C4`)
+        assert_eq!(
+            session.active_backend().as_model_backend().backend_id(),
+            "ollama"
+        );
+
+        let script = "\
+:backend claude\n\
+Erro em postgres://admin:SenhaSuperSecreta123@10.0.0.9:5432/prod\n\
+:backend ollama\n\
+:quit\n";
+        let mut input = Cursor::new(script.as_bytes());
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+
+        run_terminal_loop_with_io(&mut session, &mut input, &mut out, &mut err, false);
+
+        let stdout_str = String::from_utf8_lossy(&out);
+        let raw_http = claude_thread.join().unwrap();
+
+        // Banner explícito de backend remoto (`C3` + `C4`) + prompt marcado com `[REMOTO]`
+        assert!(stdout_str.contains("[AVISO DE BACKEND REMOTO ATIVO"));
+        assert!(stdout_str.contains("[REMOTO]"));
+        assert!(stdout_str.contains("df -h"));
+        assert!(stdout_str.contains("Backend alterado para 'ollama'"));
+
+        // Nenhum segredo vazou no payload HTTP enviado ao backend remoto nem no config.toml!
+        assert!(!raw_http.contains("SenhaSuperSecreta123"));
+        assert!(raw_http.contains("[SENHA_REDIGIDA]"));
+        let saved_cfg = fs::read_to_string(temp.path.join("config.toml")).unwrap();
+        assert!(!saved_cfg.contains("sk-ant-test-key-nao-persistida"));
     }
 }

@@ -85,7 +85,14 @@ fn print_eval_help<W: Write>(out: &mut W) {
         "  eval run [opções]\n      Executa a suíte com concorrência fixa = 1 e gera relatórios .json e .md."
     );
     let _ = writeln!(out, "\nOpções de `eval run`:");
-    let _ = writeln!(out, "  --model <MODEL>          Modelo instalado a avaliar (padrão: config.toml/env ou llama3.2)");
+    let _ = writeln!(
+        out,
+        "  --backend <BACKEND>      Backend alvo: ollama (padrão local), neural, claude, gemini, groq, openrouter, openai"
+    );
+    let _ = writeln!(
+        out,
+        "  --model <MODEL>          Modelo instalado ou remoto a avaliar (padrão: config.toml/env ou default do backend)"
+    );
     let _ = writeln!(
         out,
         "  --dataset <PATH>         Caminho do dataset JSON (padrão: eval/cases_v1.json)"
@@ -297,51 +304,197 @@ fn run_eval_run<W1: Write, W2: Write>(
         return 0;
     }
 
-    let (ollama_url, timeout_secs, model) =
-        match resolve_eval_connection(parsed.ollama_url, parsed.timeout_secs, parsed.model, true) {
-            Ok(cfg) => cfg,
-            Err(msg) => {
-                let _ = writeln!(err, "[ERRO DE CONFIGURAÇÃO]\n{}", msg);
-                return 1;
-            }
-        };
+    let backend_kind = parsed
+        .backend
+        .unwrap_or(crate::chat::backend::BackendKind::Ollama);
 
-    let client = match build_eval_client(&ollama_url, timeout_secs) {
-        Ok(c) => c,
-        Err(msg) => {
-            let _ = writeln!(err, "[ERRO DE CLIENTE OLLAMA]\n{}", msg);
-            return 1;
+    let build_common_run_config = |model_name: String, timeout_secs: u64| -> EvalRunConfig {
+        let mut run_config = EvalRunConfig::new(model_name);
+        if let Some(ref ds_path) = parsed.dataset {
+            run_config.dataset_path = ds_path.clone();
         }
+        if let Some(ref out_dir) = parsed.out_dir {
+            run_config.out_dir = out_dir.clone();
+        }
+        run_config.filter = DatasetFilter {
+            categories: parsed.categories.clone(),
+            case_ids: parsed.case_ids.clone(),
+            limit: parsed.limit,
+        };
+        run_config.judge_model = parsed.judge_model.clone();
+        run_config.timeout_secs = timeout_secs;
+        run_config.max_duration = parsed.max_duration;
+        run_config.repeat = parsed.repeat.unwrap_or(DEFAULT_EVAL_REPEAT);
+        run_config.max_consecutive_global_failures = DEFAULT_CONSECUTIVE_GLOBAL_FAILURES_LIMIT;
+        run_config.cancel_flag = cancel_flag.clone();
+        run_config.install_ctrlc_handler = install_ctrlc_handler;
+        run_config.use_kb = parsed.with_kb;
+        run_config
     };
 
-    let mut run_config = EvalRunConfig::new(model);
-    if let Some(ds_path) = parsed.dataset {
-        run_config.dataset_path = ds_path;
-    }
-    if let Some(out_dir) = parsed.out_dir {
-        run_config.out_dir = out_dir;
-    }
-    run_config.filter = DatasetFilter {
-        categories: parsed.categories,
-        case_ids: parsed.case_ids,
-        limit: parsed.limit,
-    };
-    run_config.judge_model = parsed.judge_model;
-    run_config.timeout_secs = timeout_secs;
-    run_config.max_duration = parsed.max_duration;
-    run_config.repeat = parsed.repeat.unwrap_or(DEFAULT_EVAL_REPEAT);
-    run_config.max_consecutive_global_failures = DEFAULT_CONSECUTIVE_GLOBAL_FAILURES_LIMIT;
-    run_config.cancel_flag = cancel_flag;
-    run_config.install_ctrlc_handler = install_ctrlc_handler;
-    run_config.use_kb = parsed.with_kb;
-
-    let outcome = match run_evaluation_with_progress(&client, &run_config, |event| {
-        print_progress_event(out, event);
-    }) {
-        Ok(res) => res,
-        Err(msg) => {
-            let _ = writeln!(err, "[ERRO NA AVALIAÇÃO]\n{}", msg);
-            return 1;
+    let outcome = match backend_kind {
+        crate::chat::backend::BackendKind::Ollama => {
+            let (ollama_url, timeout_secs, model) = match resolve_eval_connection(
+                parsed.ollama_url,
+                parsed.timeout_secs,
+                parsed.model,
+                true,
+            ) {
+                Ok(cfg) => cfg,
+                Err(msg) => {
+                    let _ = writeln!(err, "[ERRO DE CONFIGURAÇÃO]\n{}", msg);
+                    return 1;
+                }
+            };
+            let client = match build_eval_client(&ollama_url, timeout_secs) {
+                Ok(c) => c,
+                Err(msg) => {
+                    let _ = writeln!(err, "[ERRO DE CLIENTE OLLAMA]\n{}", msg);
+                    return 1;
+                }
+            };
+            let run_config = build_common_run_config(model, timeout_secs);
+            match run_evaluation_with_progress(&client, &run_config, |event| {
+                print_progress_event(out, event);
+            }) {
+                Ok(res) => res,
+                Err(msg) => {
+                    let _ = writeln!(err, "[ERRO NA AVALIAÇÃO]\n{}", msg);
+                    return 1;
+                }
+            }
+        }
+        crate::chat::backend::BackendKind::Neural => {
+            let base_dir = AppConfig::resolve_active_config_dir();
+            let ckpt_dir = parsed
+                .model
+                .as_deref()
+                .map(|m| {
+                    let p = std::path::Path::new(m);
+                    if p.is_absolute() {
+                        p.to_path_buf()
+                    } else {
+                        base_dir.join(p)
+                    }
+                })
+                .unwrap_or_else(|| super::repl::resolve_default_neural_checkpoint_dir(&base_dir));
+            let nb = match crate::chat::backend::NeuralBackend::load_from_dir(&ckpt_dir) {
+                Ok(b) => b,
+                Err(msg) => {
+                    let _ = writeln!(err, "[ERRO AO CARREGAR BACKEND NEURAL]\n{}", msg);
+                    return 1;
+                }
+            };
+            let timeout_secs = parsed.timeout_secs.unwrap_or(120);
+            let run_config = build_common_run_config(nb.model_label(), timeout_secs);
+            match run_evaluation_with_progress(&nb, &run_config, |event| {
+                print_progress_event(out, event);
+            }) {
+                Ok(res) => res,
+                Err(msg) => {
+                    let _ = writeln!(err, "[ERRO NA AVALIAÇÃO]\n{}", msg);
+                    return 1;
+                }
+            }
+        }
+        crate::chat::backend::BackendKind::Claude => {
+            let timeout_secs = parsed
+                .timeout_secs
+                .unwrap_or(crate::chat::backend::DEFAULT_REMOTE_TIMEOUT_SECS);
+            let limits =
+                match crate::chat::backend::RemoteLimits::from_env_with_timeout(timeout_secs) {
+                    Ok(l) => l,
+                    Err(msg) => {
+                        let _ = writeln!(err, "[ERRO DE CONFIGURAÇÃO REMOTA]\n{}", msg);
+                        return 1;
+                    }
+                };
+            let cb = match crate::chat::backend::ClaudeBackend::from_env(
+                parsed.model.as_deref(),
+                limits,
+            ) {
+                Ok(b) => b,
+                Err(msg) => {
+                    let _ = writeln!(err, "[ERRO DE BACKEND CLAUDE]\n{}", msg);
+                    return 1;
+                }
+            };
+            let _ = writeln!(
+                out,
+                "{}",
+                crate::chat::backend::format_remote_backend_banner(
+                    "Anthropic Claude API",
+                    crate::chat::backend::ModelBackend::endpoint_url(&cb),
+                    cb.default_model(),
+                    cb.limits(),
+                )
+            );
+            let run_config = build_common_run_config(cb.default_model().to_string(), timeout_secs);
+            match run_evaluation_with_progress(&cb, &run_config, |event| {
+                print_progress_event(out, event);
+            }) {
+                Ok(res) => res,
+                Err(msg) => {
+                    let _ = writeln!(err, "[ERRO NA AVALIAÇÃO]\n{}", msg);
+                    return 1;
+                }
+            }
+        }
+        remote_kind => {
+            let preset = match remote_kind {
+                crate::chat::backend::BackendKind::Gemini => {
+                    crate::chat::backend::OpenAiProviderPreset::Gemini
+                }
+                crate::chat::backend::BackendKind::Groq => {
+                    crate::chat::backend::OpenAiProviderPreset::Groq
+                }
+                crate::chat::backend::BackendKind::OpenRouter => {
+                    crate::chat::backend::OpenAiProviderPreset::OpenRouter
+                }
+                _ => crate::chat::backend::OpenAiProviderPreset::OpenAi,
+            };
+            let timeout_secs = parsed
+                .timeout_secs
+                .unwrap_or(crate::chat::backend::DEFAULT_REMOTE_TIMEOUT_SECS);
+            let limits =
+                match crate::chat::backend::RemoteLimits::from_env_with_timeout(timeout_secs) {
+                    Ok(l) => l,
+                    Err(msg) => {
+                        let _ = writeln!(err, "[ERRO DE CONFIGURAÇÃO REMOTA]\n{}", msg);
+                        return 1;
+                    }
+                };
+            let ob = match crate::chat::backend::OpenAiCompatBackend::from_env(
+                preset,
+                parsed.model.as_deref(),
+                limits,
+            ) {
+                Ok(b) => b,
+                Err(msg) => {
+                    let _ = writeln!(err, "[ERRO DE BACKEND REMOTO]\n{}", msg);
+                    return 1;
+                }
+            };
+            let _ = writeln!(
+                out,
+                "{}",
+                crate::chat::backend::format_remote_backend_banner(
+                    preset.display_name(),
+                    crate::chat::backend::ModelBackend::endpoint_url(&ob),
+                    ob.default_model(),
+                    ob.limits(),
+                )
+            );
+            let run_config = build_common_run_config(ob.default_model().to_string(), timeout_secs);
+            match run_evaluation_with_progress(&ob, &run_config, |event| {
+                print_progress_event(out, event);
+            }) {
+                Ok(res) => res,
+                Err(msg) => {
+                    let _ = writeln!(err, "[ERRO NA AVALIAÇÃO]\n{}", msg);
+                    return 1;
+                }
+            }
         }
     };
 
@@ -393,6 +546,7 @@ struct ParsedListModelsArgs {
 }
 
 struct ParsedEvalRunArgs {
+    backend: Option<crate::chat::backend::BackendKind>,
     model: Option<String>,
     dataset: Option<PathBuf>,
     categories: Vec<EvalCategory>,
@@ -612,6 +766,7 @@ fn parse_list_models_args(args: &[String]) -> Result<ParsedListModelsArgs, Strin
 
 fn parse_eval_run_args(args: &[String]) -> Result<ParsedEvalRunArgs, String> {
     let mut parsed = ParsedEvalRunArgs {
+        backend: None,
         model: None,
         dataset: None,
         categories: Vec::new(),
@@ -636,6 +791,11 @@ fn parse_eval_run_args(args: &[String]) -> Result<ParsedEvalRunArgs, String> {
                     return Err("A opção '--help' não aceita valor.".to_string());
                 }
                 parsed.help_requested = true;
+            }
+            "--backend" => {
+                let val = take_flag_value(args, &mut idx, flag, inline)?;
+                let kind = crate::chat::backend::BackendKind::parse(&val)?;
+                set_once(&mut parsed.backend, kind, flag)?;
             }
             "--model" => {
                 let val = take_flag_value(args, &mut idx, flag, inline)?;
@@ -1098,6 +1258,7 @@ mod tests {
     #[test]
     fn test_phase2_t4_eval_run_parser_table() {
         let p = parse_eval_run_args(&to_vec(&[
+            "--backend=claude",
             "--model",
             "qwen2.5:7b",
             "--dataset=eval/cases_v1.json",
@@ -1114,6 +1275,7 @@ mod tests {
             "--with-kb",
         ]))
         .expect("eval run completo válido");
+        assert_eq!(p.backend, Some(crate::chat::backend::BackendKind::Claude));
         assert_eq!(p.model.as_deref(), Some("qwen2.5:7b"));
         assert_eq!(p.limit, Some(5));
         assert_eq!(p.timeout_secs, Some(45));
@@ -1123,6 +1285,11 @@ mod tests {
         assert!(p.with_kb);
 
         let invalid_table: &[(&[&str], &str)] = &[
+            (&["--backend", "invalido"], "Backend desconhecido"),
+            (
+                &["--backend", "ollama", "--backend", "claude"],
+                "mais de uma vez",
+            ),
             (&["--with-kb=true"], "--with-kb"),
             (&["--help=true"], "--help"),
             (&["--limit", "0"], "--limit"),
@@ -1149,5 +1316,80 @@ mod tests {
                 err
             );
         }
+    }
+
+    #[test]
+    fn test_phase3_c5_eval_run_supports_remote_claude_backend() {
+        use crate::test_support::{lock_env_cwd, EnvVarGuard, TempDirGuard};
+        use std::io::{Read, Write as IoWrite};
+        use std::net::{Shutdown, TcpListener};
+
+        let _lock = lock_env_cwd();
+        let temp = TempDirGuard::new("c5_eval_claude");
+        let _env = EnvVarGuard::capture(&["ANTHROPIC_API_KEY", "SERVERMIND_ANTHROPIC_BASE_URL"]);
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mock_url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let body = serde_json::json!({
+                "id": "msg_eval_1",
+                "model": "claude-sonnet-4-0",
+                "content": [{
+                    "type": "text",
+                    "text": "No systemd, .service define o processo gerenciado e .timer agenda execuções periódicas via OnCalendar com logs no journalctl."
+                }]
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+            let _ = stream.shutdown(Shutdown::Write);
+        });
+
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-eval-test-key");
+        std::env::set_var("SERVERMIND_ANTHROPIC_BASE_URL", &mock_url);
+
+        let ds_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("eval/cases_v1.json")
+            .to_string_lossy()
+            .into_owned();
+        let out_dir = temp.path.join("eval_out");
+        let out_str = out_dir.to_string_lossy().into_owned();
+
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = run_eval_cli_with_options(
+            &to_vec(&[
+                "run",
+                "--backend",
+                "claude",
+                "--dataset",
+                &ds_path,
+                "--case",
+                "exp-01",
+                "--out-dir",
+                &out_str,
+            ]),
+            false,
+            None,
+            &mut out,
+            &mut err,
+        );
+        handle.join().unwrap();
+
+        let stdout_str = String::from_utf8_lossy(&out);
+        let stderr_str = String::from_utf8_lossy(&err);
+        assert_eq!(code, 0, "stderr: {}", stderr_str);
+        assert!(stdout_str.contains("[AVISO DE BACKEND REMOTO ATIVO"));
+        assert!(stdout_str.contains("claude-sonnet-4-0"));
+        assert!(stdout_str.contains("=== Resumo da Avaliação ==="));
     }
 }

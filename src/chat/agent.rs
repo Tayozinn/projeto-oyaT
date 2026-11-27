@@ -1,20 +1,24 @@
+use crate::chat::backend::{
+    ActiveBackend, BackendRequest, ClaudeBackend, ModelBackend, NeuralBackend, OllamaBackend,
+    OpenAiCompatBackend, OpenAiProviderPreset, RemoteLimits,
+};
 use crate::chat::config::{AppConfig, DEFAULT_CUSTOM_INSTRUCTIONS};
 use crate::chat::models::{Conversation, MemoryEntry, Message, OllamaHealth, Role};
 use crate::chat::ollama::OllamaClient;
 use crate::chat::storage::Storage;
-use crate::neural::inference::{InferenceBackendKind, InferenceRouter, NeuralEngine};
 
 pub const SETTING_ACTIVE_MODEL: &str = "active_model";
 pub const SETTING_CUSTOM_INSTRUCTIONS: &str = "custom_instructions";
 
-/// Núcleo conversacional do SERVERMIND AI (Fase 2).
-/// Desacoplado da interface de terminal e responsável por coordenar modelo ativo,
+/// Núcleo conversacional do SERVERMIND AI (Fase 3 — `ModelBackend` trocável).
+/// Desacoplado da interface de terminal e responsável por coordenar backend ativo,
 /// histórico de conversas, instruções personalizadas com travas de segurança e memórias explícitas.
 pub struct AgentSession {
     config: AppConfig,
     storage: Storage,
     ollama: OllamaClient,
-    inference: InferenceRouter,
+    backend: ActiveBackend,
+    remote_model_override: Option<String>,
     current_conversation: Conversation,
     context_messages: Vec<Message>,
 }
@@ -52,33 +56,84 @@ impl AgentSession {
         let current_conversation = storage.create_conversation("Nova conversa", &config.model)?;
 
         let system_msg = Message::new(Role::System, system_prompt);
+        let default_backend = ActiveBackend::Ollama(OllamaBackend::new(ollama.clone()));
 
         Ok(Self {
             config,
             storage,
             ollama,
-            inference: InferenceRouter::Ollama,
+            backend: default_backend,
+            remote_model_override: None,
             current_conversation,
             context_messages: vec![system_msg],
         })
     }
 
-    pub fn backend_kind(&self) -> InferenceBackendKind {
-        self.inference.kind()
+    pub fn active_backend(&self) -> &ActiveBackend {
+        &self.backend
+    }
+
+    pub fn active_model_label(&self) -> String {
+        match &self.backend {
+            ActiveBackend::Ollama(_) => self.config.model.clone(),
+            ActiveBackend::Neural(nb) => nb.model_label(),
+            ActiveBackend::Claude(cb) => format!(
+                "claude:{} [REMOTO]",
+                self.remote_model_override
+                    .as_deref()
+                    .unwrap_or_else(|| cb.default_model())
+            ),
+            ActiveBackend::OpenAiCompat(ob) => format!(
+                "{}:{} [REMOTO]",
+                ob.preset().backend_id(),
+                self.remote_model_override
+                    .as_deref()
+                    .unwrap_or_else(|| ob.default_model())
+            ),
+        }
     }
 
     pub fn use_ollama_backend(&mut self) {
-        self.inference = InferenceRouter::Ollama;
+        self.remote_model_override = None;
+        self.backend = ActiveBackend::Ollama(OllamaBackend::new(self.ollama.clone()));
     }
 
     pub fn use_neural_backend(
         &mut self,
         checkpoint_dir: &std::path::Path,
     ) -> Result<(usize, f32), String> {
-        let engine = NeuralEngine::load_from_dir(checkpoint_dir)?;
-        let info = (engine.step, engine.best_val_loss);
-        self.inference = InferenceRouter::ServerMindNeural(engine);
+        let nb = NeuralBackend::load_from_dir(checkpoint_dir)?;
+        let info = (nb.engine.step, nb.engine.best_val_loss);
+        self.remote_model_override = None;
+        self.backend = ActiveBackend::Neural(Box::new(nb));
         Ok(info)
+    }
+
+    pub fn use_claude_backend(
+        &mut self,
+        model_override: Option<&str>,
+    ) -> Result<(String, String, RemoteLimits), String> {
+        let limits = RemoteLimits::from_env_with_timeout(self.config.request_timeout_secs)?;
+        let cb = ClaudeBackend::from_env(model_override, limits)?;
+        let model_name = cb.default_model().to_string();
+        let endpoint = cb.endpoint_url().to_string();
+        self.remote_model_override = Some(model_name.clone());
+        self.backend = ActiveBackend::Claude(cb);
+        Ok((endpoint, model_name, limits))
+    }
+
+    pub fn use_openai_compat_backend(
+        &mut self,
+        preset: OpenAiProviderPreset,
+        model_override: Option<&str>,
+    ) -> Result<(String, String, RemoteLimits), String> {
+        let limits = RemoteLimits::from_env_with_timeout(self.config.request_timeout_secs)?;
+        let ob = OpenAiCompatBackend::from_env(preset, model_override, limits)?;
+        let model_name = ob.default_model().to_string();
+        let endpoint = ob.endpoint_url().to_string();
+        self.remote_model_override = Some(model_name.clone());
+        self.backend = ActiveBackend::OpenAiCompat(ob);
+        Ok((endpoint, model_name, limits))
     }
 
     pub fn config(&self) -> &AppConfig {
@@ -349,13 +404,21 @@ impl AgentSession {
         }
         request_messages.push(user_msg.clone());
 
-        let raw_reply = self.inference.generate(
-            &self.ollama,
-            &self.config.model,
-            &request_messages,
-            trimmed,
+        let target_model = self
+            .remote_model_override
+            .as_deref()
+            .unwrap_or(&self.config.model);
+        let backend_resp = self.backend.as_model_backend().generate(
+            BackendRequest {
+                model: target_model,
+                messages: &request_messages,
+                tools: &[],
+                user_prompt: trimmed,
+                timeout_override: None,
+            },
             on_chunk,
         )?;
+        let raw_reply = backend_resp.into_display_text();
         let reply = crate::chat::guardrails::apply_advisory_guardrails(trimmed, &raw_reply);
 
         let _ = self.storage.save_conversation_turn(

@@ -118,11 +118,11 @@ O agente nasce somente leitura (Fase 5) e só ganha ações, sempre com confirma
 
 | ID | Entrega | Por quê | Fase | Esforço | Status |
 | --- | --- | --- | --- | --- | --- |
-| C1 | Interface `ModelBackend` (entram mensagens e ferramentas, sai texto ou chamada de ferramenta) com adaptadores `OllamaBackend` e `NeuralBackend` | O agente deixa de depender de um modelo específico | 3 | 2 a 3 dias | Não iniciado |
-| C2 | `ClaudeBackend` com chave em variável de ambiente, `max_tokens`, timeout e limite de histórico | Respostas melhores com custo sob controle | 3 | 2 a 3 dias | Não iniciado |
-| C3 | Redação de segredos antes de enviar a um backend remoto (tokens, senhas, chaves) e banner "backend remoto" | Logs de servidor podem conter segredos | 3 | 2 dias | Não iniciado |
-| C4 | Regra "só loopback" vale só para o Ollama; backend remoto exige ativação explícita | Mantém a promessa de privacidade onde ela se aplica | 3 | 0,5 dia | Não iniciado |
-| C5 | Comparar Ollama e Claude no `eval` e registrar o baseline | Decidir com dados, e não por impressão | 3 | 1 dia | Não iniciado |
+| C1 | Interface `ModelBackend` (entram mensagens e ferramentas, sai texto ou chamada de ferramenta) com adaptadores `OllamaBackend` e `NeuralBackend` | O agente deixa de depender de um modelo específico | 3 | 2 a 3 dias | Concluído |
+| C2 | `ClaudeBackend` + `OpenAiCompatBackend` (`gemini`, `groq`, `openrouter`, `openai`) com chave em variável de ambiente, `max_tokens`, timeout e limite de histórico | Respostas melhores com custo sob controle e opções gratuitas oficiais | 3 | 2 a 3 dias | Concluído |
+| C3 | Redação de segredos antes de enviar a um backend remoto (tokens, senhas, chaves) e banner "backend remoto" | Logs de servidor podem conter segredos | 3 | 2 dias | Concluído |
+| C4 | Regra "só loopback" vale só para o Ollama; backend remoto exige ativação explícita | Mantém a promessa de privacidade onde ela se aplica | 3 | 0,5 dia | Concluído |
+| C5 | Comparar backends no `eval run --backend` e registrar o baseline (`docs/EVAL_BACKENDS.md`) | Decidir com dados, e não por impressão | 3 | 1 dia | Concluído |
 | C6 | Trait `Tool` e ferramentas só leitura: `df`, `free`, `uptime`, `ss`, `systemctl status`, `journalctl` limitado, `docker ps` | Primeiras capacidades sem risco de alterar estado | 5 | 3 a 5 dias | Não iniciado |
 | C7 | Política de permissões: allowlist, argumentos validados, sem shell livre (nada de `sh -c`) | A segurança não depende de o modelo acertar | 5 | 3 dias | Não iniciado |
 | C8 | Log de auditoria só de acréscimo: proposto, aprovado, negado, executado, saída truncada | Rastreia tudo o que o agente faz | 5 | 2 dias | Não iniciado |
@@ -236,7 +236,7 @@ Seis decisões ainda dependem de você, e sete marcos mostram quando cada fase e
 - [x] Fase 0, Rede de segurança: repositório com tag `pre-refactor`, CI verde e snapshots de help.
 - [x] Fase 1, Bugs críticos: A1 a A11 corrigidos, cada um com teste.
 - [x] Fase 2, Organização: `lib.rs`, pastas por domínio e `cli` dividido, com todos os testes antigos passando.
-- [ ] Fase 3, Cérebro trocável: `ModelBackend` com Ollama e Claude, e baseline do `eval` registrado.
+- [x] Fase 3, Cérebro trocável: `ModelBackend` com Ollama e Claude (+ presets gratuitos `gemini`, `groq`, `openrouter`), e baseline do `eval` registrado em `docs/EVAL_BACKENDS.md`.
 - [ ] Fase 4, Consolidação: `cli` sem lógica de negócio, `CliError` e `clap` nos subcomandos.
 - [ ] Fase 5, Agente somente leitura: ferramentas, política, auditoria e testes de negação passando.
 - [ ] Fase 6, Agente com ações: confirmação, execução isolada e um cenário ponta a ponta em VM.

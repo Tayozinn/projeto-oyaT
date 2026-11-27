@@ -7,7 +7,6 @@
 #![allow(clippy::large_enum_variant, clippy::manual_div_ceil)]
 
 use crate::chat::models::{Message, Role};
-use crate::chat::ollama::OllamaClient;
 use crate::neural::tokenizer::{
     BpeTokenizer, ASSISTANT_TOKEN, BOS_TOKEN, EOS_TOKEN, PAD_TOKEN, SYSTEM_TOKEN, USER_TOKEN,
 };
@@ -37,32 +36,6 @@ impl Default for GenerationConfig {
             temperature: 0.2,
             top_k: 5,
             seed: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum InferenceBackendKind {
-    Ollama,
-    ServerMindNeural,
-}
-
-impl InferenceBackendKind {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Ollama => "ollama",
-            Self::ServerMindNeural => "neural",
-        }
-    }
-
-    pub fn parse(raw: &str) -> Result<Self, String> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "ollama" => Ok(Self::Ollama),
-            "neural" | "servermind" | "servermind-neural" => Ok(Self::ServerMindNeural),
-            other => Err(format!(
-                "Backend de inferência desconhecido: '{}'. Use 'ollama' ou 'neural'.",
-                other
-            )),
         }
     }
 }
@@ -534,45 +507,6 @@ fn sanitize_decoded_tokens(raw: &str) -> String {
         .replace(SYSTEM_TOKEN, "")
 }
 
-pub enum InferenceRouter {
-    Ollama,
-    ServerMindNeural(NeuralEngine),
-}
-
-impl InferenceRouter {
-    pub fn kind(&self) -> InferenceBackendKind {
-        match self {
-            Self::Ollama => InferenceBackendKind::Ollama,
-            Self::ServerMindNeural(_) => InferenceBackendKind::ServerMindNeural,
-        }
-    }
-
-    pub fn generate(
-        &self,
-        ollama: &OllamaClient,
-        model_name: &str,
-        request_messages: &[Message],
-        user_prompt: &str,
-        on_chunk: Option<&mut dyn FnMut(&str)>,
-    ) -> Result<String, String> {
-        match self {
-            Self::Ollama => match on_chunk {
-                Some(cb) => ollama.send_chat_streaming(model_name, request_messages, cb),
-                None => ollama.send_chat(model_name, request_messages),
-            },
-            Self::ServerMindNeural(engine) => {
-                let (reply, _) = engine.generate_with_config(
-                    request_messages,
-                    user_prompt,
-                    GenerationConfig::default(),
-                    on_chunk,
-                );
-                Ok(reply)
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,9 +545,6 @@ mod tests {
         assert_eq!(engine.step, 5);
         let reply = engine.generate_reply("Como checar portas no Linux?", 16, 0.8, 8);
         assert!(!reply.trim().is_empty());
-
-        let router = InferenceRouter::ServerMindNeural(engine);
-        assert_eq!(router.kind(), InferenceBackendKind::ServerMindNeural);
 
         let _ = fs::remove_dir_all(&dir);
     }
