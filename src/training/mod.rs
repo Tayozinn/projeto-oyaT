@@ -185,13 +185,14 @@ pub fn pack_chat_masked_sequences(
 }
 
 /// Avalia perda média em sequências mascaradas (`MaskedSequence`) na CPU.
+/// Retorna `None` quando não há nenhum token alvo válido (`!= pad_id`), evitando congelar `best.bin` em `0.0`.
 pub fn evaluate_masked_loss(
     model: &ServerMindTransformer,
     sequences: &[MaskedSequence],
     pad_id: usize,
-) -> f32 {
+) -> Option<f32> {
     if sequences.is_empty() || model.config.vocab_size == 0 {
-        return 0.0;
+        return None;
     }
     let vocab = model.config.vocab_size;
     let mut total_loss = 0.0f64;
@@ -209,7 +210,7 @@ pub fn evaluate_masked_loss(
             }
             let row = &logits[t * vocab..(t + 1) * vocab];
             if row.iter().any(|x| !x.is_finite()) {
-                return f32::NAN;
+                return Some(f32::NAN);
             }
             let max_v = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             let mut sum_exp = 0.0f64;
@@ -224,9 +225,9 @@ pub fn evaluate_masked_loss(
     }
 
     if total_tokens == 0 {
-        0.0
+        None
     } else {
-        (total_loss / total_tokens as f64) as f32
+        Some((total_loss / total_tokens as f64) as f32)
     }
 }
 
@@ -375,13 +376,18 @@ pub fn cosine_lr(
 
 /// Avalia perda média de cross-entropy em janelas de validação sem alterar pesos.
 /// Trunca cada janela ao limite `model.config.max_seq_len` (consistente com `forward_logits`).
-pub fn evaluate_loss(model: &ServerMindTransformer, windows: &[Vec<usize>], pad_id: usize) -> f32 {
+/// Retorna `None` quando não há nenhum token alvo válido (`!= pad_id`), evitando congelar `best.bin` em `0.0`.
+pub fn evaluate_loss(
+    model: &ServerMindTransformer,
+    windows: &[Vec<usize>],
+    pad_id: usize,
+) -> Option<f32> {
     if windows.is_empty() {
-        return 0.0;
+        return None;
     }
     let vocab = model.config.vocab_size;
     if vocab == 0 {
-        return 0.0;
+        return None;
     }
     let mut total_loss = 0.0f64;
     let mut total_tokens = 0usize;
@@ -400,7 +406,7 @@ pub fn evaluate_loss(model: &ServerMindTransformer, windows: &[Vec<usize>], pad_
             }
             let row = &logits[t * vocab..(t + 1) * vocab];
             if row.iter().any(|x| !x.is_finite()) {
-                return f32::NAN;
+                return Some(f32::NAN);
             }
             let max_v = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             let mut sum_exp = 0.0f64;
@@ -415,9 +421,9 @@ pub fn evaluate_loss(model: &ServerMindTransformer, windows: &[Vec<usize>], pad_
     }
 
     if total_tokens == 0 {
-        0.0
+        None
     } else {
-        (total_loss / total_tokens as f64) as f32
+        Some((total_loss / total_tokens as f64) as f32)
     }
 }
 
@@ -537,9 +543,12 @@ impl Trainer {
         let latest_path = self.config.checkpoint_dir.join("latest.bin");
         let best_path = self.config.checkpoint_dir.join("best.bin");
         if self.current_step == 0 {
-            for stale in [&metrics_path, &latest_path, &best_path] {
-                if stale.exists() {
-                    let _ = fs::remove_file(stale);
+            for existing in [&metrics_path, &latest_path, &best_path] {
+                if existing.exists() {
+                    return Err(format!(
+                        "Artefato de treino existente encontrado em '{}'. Recusando sobrescrever progresso; use `--resume` ou outro diretório `--out`.",
+                        existing.display()
+                    ));
                 }
             }
         }
@@ -794,7 +803,7 @@ impl Trainer {
 
             let val_loss = if should_eval && has_val {
                 last_eval_wall = Instant::now();
-                let v = if let Some(ref m_sub) = masked_eval_subset {
+                let eval_opt = if let Some(ref m_sub) = masked_eval_subset {
                     if let Some(ref mut gpu) = gpu_session {
                         gpu.evaluate_masked_loss(m_sub, pad_id)?
                     } else {
@@ -805,23 +814,35 @@ impl Trainer {
                 } else {
                     evaluate_loss(&self.model, &eval_subset, pad_id)
                 };
-                if v < self.best_val_loss {
-                    self.best_val_loss = v;
-                    if let Some(ref mut gpu) = gpu_session {
-                        if !host_synced {
-                            gpu.sync_to_host(&mut self.model, &mut self.optimizer)?;
-                            host_synced = true;
+                match eval_opt {
+                    Some(v) if v.is_finite() => {
+                        if v < self.best_val_loss {
+                            self.best_val_loss = v;
+                            if let Some(ref mut gpu) = gpu_session {
+                                if !host_synced {
+                                    gpu.sync_to_host(&mut self.model, &mut self.optimizer)?;
+                                    host_synced = true;
+                                }
+                            }
+                            save_checkpoint(
+                                &best_path,
+                                &self.model,
+                                Some(&self.optimizer),
+                                self.current_step,
+                                self.best_val_loss,
+                            )?;
                         }
+                        Some(v)
                     }
-                    save_checkpoint(
-                        &best_path,
-                        &self.model,
-                        Some(&self.optimizer),
-                        self.current_step,
-                        self.best_val_loss,
-                    )?;
+                    Some(non_finite) => {
+                        eprintln!(
+                            "[AVISO DE VALIDAÇÃO] step={}: val_loss não finita ({}) ignorada; best.bin preservado em {:.4}.",
+                            self.current_step, non_finite, self.best_val_loss
+                        );
+                        None
+                    }
+                    None => None,
                 }
-                Some(v)
             } else {
                 None
             };
@@ -1114,7 +1135,7 @@ mod tests {
         let model = ServerMindTransformer::new_random(cfg, 21).unwrap();
         // Janela com 9 tokens (> max_seq_len = 4), como gerada por `pack_sequences(..., 4)`
         let long_win = vec![1usize, 2, 3, 4, 5, 6, 7, 8, 9];
-        let loss = evaluate_loss(&model, &[long_win], 0);
+        let loss = evaluate_loss(&model, &[long_win], 0).unwrap();
         assert!(loss.is_finite() && loss > 0.0);
 
         // Lote composto apenas por `pad_id` (step_tokens == 0) não deve avançar `optimizer.step`
@@ -1176,7 +1197,7 @@ mod tests {
             }
         }
 
-        // Verifica registro de `grad_norm > 0` e limpeza de checkpoint obsoleto em novo treino
+        // Verifica registro de `grad_norm > 0` e proteção contra sobrescrita de checkpoint existente
         let cfg = TransformerConfig {
             vocab_size: tok.vocab_size(),
             max_seq_len: 12,
@@ -1188,7 +1209,6 @@ mod tests {
         let model = ServerMindTransformer::new_random(cfg, 77).unwrap();
         let dir = temp_dir("grad_norm_and_clean");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("best.bin"), b"stale_corrupt_bytes").unwrap();
 
         let train_cfg = TrainingConfig {
             run_name: "sm002-gn".to_string(),
@@ -1221,7 +1241,6 @@ mod tests {
             .iter()
             .all(|h| h.grad_norm > 0.0 && h.grad_norm.is_finite()));
 
-        // O `best.bin` corrompido antigo foi substituído por um checkpoint válido
         assert!(crate::neural::load_checkpoint(&dir.join("best.bin")).is_ok());
 
         // `current_step >= max_steps` deve retornar erro explícito
@@ -1433,6 +1452,195 @@ mod tests {
         );
         assert_eq!(code, 0, "stderr={}", String::from_utf8_lossy(&err_buf));
         assert!(out_ckpt.join("best.bin").is_file());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn phase1_a1_refuses_overwriting_existing_checkpoints_and_marathon_logs() {
+        let dir = temp_dir("a1_protect_ckpt");
+        let ds_file = dir.join("qa.jsonl");
+        let out_ckpt = dir.join("ckpt");
+        fs::create_dir_all(&out_ckpt).unwrap();
+        fs::write(
+            &ds_file,
+            "{\"domain\":\"linux\",\"prompt\":\"Como ver portas?\",\"response\":\"Use ss -tulnp no servidor.\"}\n",
+        )
+        .unwrap();
+
+        // 1. Faz um primeiro treino legítimo que grava `best.bin`, `latest.bin` e `metrics.jsonl`
+        let base_args = vec![
+            "--dataset".to_string(),
+            ds_file.to_string_lossy().to_string(),
+            "--out".to_string(),
+            out_ckpt.to_string_lossy().to_string(),
+            "--steps".to_string(),
+            "2".to_string(),
+            "--device".to_string(),
+            "cpu".to_string(),
+            "--d-model".to_string(),
+            "16".to_string(),
+            "--layers".to_string(),
+            "1".to_string(),
+            "--heads".to_string(),
+            "2".to_string(),
+            "--ff".to_string(),
+            "32".to_string(),
+            "--seq-len".to_string(),
+            "32".to_string(),
+        ];
+        let mut out_buf = Vec::new();
+        let mut err_buf = Vec::new();
+        let c1 = crate::cli::run_train_neural_cli_with_cancel(
+            &base_args,
+            false,
+            None,
+            &mut out_buf,
+            &mut err_buf,
+        );
+        assert_eq!(c1, 0, "stderr={}", String::from_utf8_lossy(&err_buf));
+
+        // Grava marcadores sentinela para garantir que NADA seja apagado/truncado num 2º treino sem --resume
+        let best_before = fs::read(out_ckpt.join("best.bin")).unwrap();
+        let latest_before = fs::read(out_ckpt.join("latest.bin")).unwrap();
+        let metrics_before = fs::read(out_ckpt.join("metrics.jsonl")).unwrap();
+        fs::write(out_ckpt.join("training_evolution.md"), "EVOLUTION_SENTINEL").unwrap();
+        fs::write(out_ckpt.join("evolution_log.jsonl"), "LOG_SENTINEL\n").unwrap();
+
+        // 2. Tentativa de novo `train-neural` no mesmo diretório SEM `--resume` deve falhar (código 1) e preservar tudo!
+        out_buf.clear();
+        err_buf.clear();
+        let c2 = crate::cli::run_train_neural_cli_with_cancel(
+            &base_args,
+            false,
+            None,
+            &mut out_buf,
+            &mut err_buf,
+        );
+        assert_eq!(c2, 1, "deveria recusar sobrescrever checkpoints existentes");
+        let err_msg = String::from_utf8_lossy(&err_buf);
+        assert!(err_msg.contains("--resume"), "stderr={}", err_msg);
+        assert_eq!(fs::read(out_ckpt.join("best.bin")).unwrap(), best_before);
+        assert_eq!(
+            fs::read(out_ckpt.join("latest.bin")).unwrap(),
+            latest_before
+        );
+        assert_eq!(
+            fs::read(out_ckpt.join("metrics.jsonl")).unwrap(),
+            metrics_before
+        );
+
+        // 3. Tentativa de `--marathon` no mesmo diretório SEM `--resume` também deve recusar e preservar os logs!
+        let mut marathon_args = base_args.clone();
+        marathon_args.push("--marathon".to_string());
+        marathon_args.push("--max-duration".to_string());
+        marathon_args.push("1s".to_string());
+        out_buf.clear();
+        err_buf.clear();
+        let c3 = crate::cli::run_train_neural_cli_with_cancel(
+            &marathon_args,
+            false,
+            None,
+            &mut out_buf,
+            &mut err_buf,
+        );
+        assert_eq!(c3, 1, "maratona sem --resume deveria recusar sobrescrever");
+        assert_eq!(
+            fs::read_to_string(out_ckpt.join("training_evolution.md")).unwrap(),
+            "EVOLUTION_SENTINEL"
+        );
+        assert_eq!(
+            fs::read_to_string(out_ckpt.join("evolution_log.jsonl")).unwrap(),
+            "LOG_SENTINEL\n"
+        );
+
+        // 4. Guarda direta no `Trainer`: novo `Trainer` (`current_step == 0`) apontando para pasta ocupada também recusa!
+        let tok = BpeTokenizer::load(&out_ckpt.join("tokenizer.json")).unwrap();
+        let cfg = TransformerConfig {
+            vocab_size: tok.vocab_size(),
+            max_seq_len: 32,
+            d_model: 16,
+            n_heads: 2,
+            n_layers: 1,
+            d_ff: 32,
+        };
+        let fresh_model = ServerMindTransformer::new_random(cfg, 99).unwrap();
+        let mut fresh_trainer = Trainer::new(
+            fresh_model,
+            TrainingConfig {
+                run_name: "fresh-accidental".to_string(),
+                checkpoint_dir: out_ckpt.clone(),
+                max_steps: 2,
+                batch_size: 1,
+                seq_len: 32,
+                learning_rate: 1e-3,
+                min_learning_rate: 1e-4,
+                warmup_steps: 1,
+                weight_decay: 0.0,
+                max_grad_norm: 1.0,
+                eval_interval: 1,
+                checkpoint_interval: 2,
+                max_val_windows: 8,
+                device: ComputeDevice::Cpu,
+            },
+        );
+        let dummy_wins = vec![vec![1usize, 2, 3, 4]];
+        assert!(fresh_trainer
+            .train(&dummy_wins, &dummy_wins, tok.pad_id())
+            .is_err());
+        assert_eq!(fs::read(out_ckpt.join("best.bin")).unwrap(), best_before);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn phase1_a2_zero_token_eval_does_not_freeze_best_bin_at_zero_and_warns_on_nan() {
+        let cfg = TransformerConfig {
+            vocab_size: 16,
+            max_seq_len: 8,
+            d_model: 16,
+            n_heads: 2,
+            n_layers: 1,
+            d_ff: 32,
+        };
+        let model = ServerMindTransformer::new_random(cfg, 123).unwrap();
+        let dir = temp_dir("a2_zero_eval");
+        let train_cfg = TrainingConfig {
+            run_name: "a2-zero-val".to_string(),
+            checkpoint_dir: dir.clone(),
+            max_steps: 2,
+            batch_size: 1,
+            seq_len: 8,
+            learning_rate: 1e-3,
+            min_learning_rate: 1e-4,
+            warmup_steps: 1,
+            weight_decay: 0.0,
+            max_grad_norm: 1.0,
+            eval_interval: 1,
+            checkpoint_interval: 2,
+            max_val_windows: 8,
+            device: ComputeDevice::Cpu,
+        };
+        let mut trainer = Trainer::new(model, train_cfg);
+        let train_wins = vec![vec![1usize, 2, 3, 4, 5]];
+        // Janela de validação onde todos os targets são `pad_id = 0` (0 tokens válidos!)
+        let pad_only_val = vec![vec![1usize, 0, 0, 0]];
+        let rep = trainer.train(&train_wins, &pad_only_val, 0).unwrap();
+
+        // A2: `best_val_loss` NÃO pode virar `0.0` quando não houve tokens válidos na validação!
+        assert_eq!(evaluate_loss(&trainer.model, &pad_only_val, 0), None);
+        assert!(
+            rep.best_val_loss.is_infinite(),
+            "best_val_loss congelou indevidamente em {}",
+            rep.best_val_loss
+        );
+        assert!(rep.history.iter().all(|h| h.val_loss.is_none()));
+
+        // A2 (parte 2): pesos corrompidos com NaN geram Some(NaN) em evaluate_loss e NUNCA sobrescrevem best_val_loss!
+        trainer.best_val_loss = 2.5;
+        trainer.model.lm_head[0] = f32::NAN;
+        let nan_eval = evaluate_loss(&trainer.model, &[vec![1usize, 2, 3]], 0);
+        assert!(matches!(nan_eval, Some(v) if v.is_nan()));
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -89,11 +89,9 @@ pub fn evaluate_neural_engine(
 ) -> NeuralEvalSummary {
     let seq_len = engine.model.config.max_seq_len.max(8);
     let val_windows = pack_eval_sequences(&engine.tokenizer, validation_texts, seq_len);
-    let val_loss = if val_windows.is_empty() {
-        engine.best_val_loss
-    } else {
-        evaluate_loss(&engine.model, &val_windows, engine.tokenizer.pad_id())
-    };
+    let val_loss = evaluate_loss(&engine.model, &val_windows, engine.tokenizer.pad_id())
+        .filter(|v| v.is_finite())
+        .unwrap_or(engine.best_val_loss);
     let perplexity = if val_loss.is_finite() {
         (val_loss as f64).exp().min(f32::MAX as f64) as f32
     } else {

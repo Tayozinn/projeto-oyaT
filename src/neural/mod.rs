@@ -2897,7 +2897,7 @@ mod tests {
         let win = vec![1usize, 5, 1, 7, 3, 2];
         let mut g_win = TransformerGrads::zeros_like(&cfg);
         let (l_sum, n_val) = model.forward_and_backward(&win[..5], &win[1..], 0, &mut g_win);
-        let eval_l = crate::training::evaluate_loss(&model, &[win], 0);
+        let eval_l = crate::training::evaluate_loss(&model, &[win], 0).unwrap();
         assert!(
             ((l_sum / n_val as f32) - eval_l).abs() < 1e-5,
             "train_loss={} vs eval_loss={}",
@@ -3920,8 +3920,8 @@ mod tests {
 
         // Verifica `evaluate_loss` residente em VRAM vs CPU
         let eval_win = vec![vec![1usize, 4, 7, 2, 9, 12, 0, 5]];
-        let val_gpu = sess.evaluate_loss(&eval_win, 0).unwrap();
-        let val_cpu = crate::training::evaluate_loss(&model_cpu, &eval_win, 0);
+        let val_gpu = sess.evaluate_loss(&eval_win, 0).unwrap().unwrap();
+        let val_cpu = crate::training::evaluate_loss(&model_cpu, &eval_win, 0).unwrap();
         assert!((val_gpu - val_cpu).abs() <= 1e-3);
 
         // Executa `step_adamw` na GPU (com weight_decay e clipping ativos) e compara pesos + m + v
@@ -4226,7 +4226,7 @@ mod tests {
 
         // 2. Round-trip completo `SMQ1` em todas as 4 precisões + garantia de zero pesos 2D FP32 na RAM
         let eval_win = vec![vec![2usize, 9, 14, 27, 35, 41, 12, 6]];
-        let loss_fp32 = crate::training::evaluate_loss(&fp32_model, &eval_win, 0);
+        let loss_fp32 = crate::training::evaluate_loss(&fp32_model, &eval_win, 0).unwrap();
 
         let mut prev_bytes = fp32_bytes;
         for (prec, max_loss_delta) in [
@@ -4274,7 +4274,7 @@ mod tests {
                 );
             }
 
-            let loss_q = crate::training::evaluate_loss(&reloaded, &eval_win, 0);
+            let loss_q = crate::training::evaluate_loss(&reloaded, &eval_win, 0).unwrap();
             assert!(
                 (loss_q - loss_fp32).abs() <= max_loss_delta,
                 "degradação excessiva de loss em {:?}: fp32={} vs quant={}",
@@ -4330,7 +4330,8 @@ mod tests {
             let best_disk_mb = std::fs::metadata(real_dir.join("best.bin")).unwrap().len() as f64
                 / (1024.0 * 1024.0);
             let fp32_ram_mb = engine_fp32.weight_bytes() as f64 / (1024.0 * 1024.0);
-            let fp32_loss = crate::training::evaluate_loss(&engine_fp32.model, &val_wins, pad);
+            let fp32_loss =
+                crate::training::evaluate_loss(&engine_fp32.model, &val_wins, pad).unwrap_or(0.0);
             let prompt_ids: Vec<usize> = (1..=24)
                 .map(|i| i % engine_fp32.model.config.vocab_size)
                 .collect();
@@ -4372,7 +4373,8 @@ mod tests {
                 let _ = std::fs::remove_file(&p_smq);
 
                 let ram_mb = reloaded.actual_weight_bytes() as f64 / (1024.0 * 1024.0);
-                let qloss = crate::training::evaluate_loss(&reloaded, &val_wins, pad);
+                let qloss =
+                    crate::training::evaluate_loss(&reloaded, &val_wins, pad).unwrap_or(0.0);
                 let tq = std::time::Instant::now();
                 for _ in 0..4 {
                     let _ = reloaded.generate_with_kv_precision(

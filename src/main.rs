@@ -46,7 +46,13 @@ fn dispatch_cli_args_with_io<W1: Write, W2: Write>(
             out,
             err,
         )),
-        "train-neural" => Some(cli::run_train_neural_cli(&args[2..], out, err)),
+        "train-neural" => Some(cli::run_train_neural_cli_with_cancel(
+            &args[2..],
+            install_ctrlc_handler,
+            cancel_flag,
+            out,
+            err,
+        )),
         "eval-neural" => Some(cli::run_eval_neural_cli(&args[2..], out, err)),
         "hw" => Some(cli::run_hw_cli(out)),
         "--help" | "-h" => {
@@ -1748,5 +1754,53 @@ mod tests {
             );
             assert!(!err.trim().is_empty(), "stderr vazio para {:?}", bad_args);
         }
+    }
+
+    #[test]
+    fn test_phase1_a3_train_neural_dispatch_propagates_cancel_flag() {
+        let temp = TempDirGuard::new("a3_train_cancel");
+        let ds_path = temp.path.join("qa.jsonl");
+        let out_dir = temp.path.join("ckpt");
+        fs::write(
+            &ds_path,
+            "{\"domain\":\"linux\",\"prompt\":\"Como ver portas?\",\"response\":\"Execute ss -tulnp no Linux.\"}\n",
+        )
+        .unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(true));
+        let ds_str = ds_path.to_string_lossy().into_owned();
+        let out_str = out_dir.to_string_lossy().into_owned();
+
+        let (code, _out, _err) = run_cli_capture(
+            &[
+                "servermind-ai",
+                "train-neural",
+                "--dataset",
+                &ds_str,
+                "--out",
+                &out_str,
+                "--steps",
+                "10",
+                "--device",
+                "cpu",
+                "--d-model",
+                "16",
+                "--layers",
+                "1",
+                "--heads",
+                "2",
+                "--ff",
+                "32",
+                "--seq-len",
+                "32",
+            ],
+            Some(cancel),
+        );
+
+        assert_eq!(
+            code,
+            Some(130),
+            "train-neural via dispatch deve honrar cancel_flag e sair com 130"
+        );
     }
 }

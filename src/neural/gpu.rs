@@ -2496,9 +2496,13 @@ impl VulkanTrainingSession {
     }
 
     /// Avalia a perda média de validação diretamente na VRAM (sem baixar pesos para a CPU).
-    pub fn evaluate_loss(&mut self, windows: &[Vec<usize>], pad_id: usize) -> Result<f32, String> {
+    pub fn evaluate_loss(
+        &mut self,
+        windows: &[Vec<usize>],
+        pad_id: usize,
+    ) -> Result<Option<f32>, String> {
         if windows.is_empty() || self.config.vocab_size == 0 {
-            return Ok(0.0);
+            return Ok(None);
         }
         let v = self.config.vocab_size;
         let mut total_loss = 0.0f64;
@@ -2536,9 +2540,9 @@ impl VulkanTrainingSession {
         }
 
         if total_tokens == 0 {
-            Ok(0.0)
+            Ok(None)
         } else {
-            Ok((total_loss / total_tokens as f64) as f32)
+            Ok(Some((total_loss / total_tokens as f64) as f32))
         }
     }
 
@@ -2547,9 +2551,9 @@ impl VulkanTrainingSession {
         &mut self,
         sequences: &[crate::training::MaskedSequence],
         pad_id: usize,
-    ) -> Result<f32, String> {
+    ) -> Result<Option<f32>, String> {
         if sequences.is_empty() || self.config.vocab_size == 0 {
-            return Ok(0.0);
+            return Ok(None);
         }
         let v = self.config.vocab_size;
         let mut total_loss = 0.0f64;
@@ -2585,9 +2589,9 @@ impl VulkanTrainingSession {
         }
 
         if total_tokens == 0 {
-            Ok(0.0)
+            Ok(None)
         } else {
-            Ok((total_loss / total_tokens as f64) as f32)
+            Ok(Some((total_loss / total_tokens as f64) as f32))
         }
     }
 

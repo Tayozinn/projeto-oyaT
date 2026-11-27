@@ -2073,6 +2073,29 @@ fn load_seed_corpus(dataset_path: &std::path::Path) -> Result<Vec<String>, Strin
     Ok(examples)
 }
 
+fn check_no_existing_training_artifacts(out_dir: &std::path::Path) -> Result<(), String> {
+    const PROTECTED_FILES: &[&str] = &[
+        "best.bin",
+        "latest.bin",
+        "metrics.jsonl",
+        "training_evolution.md",
+        "evolution_log.jsonl",
+    ];
+    let existing: Vec<&str> = PROTECTED_FILES
+        .iter()
+        .copied()
+        .filter(|name| out_dir.join(name).exists())
+        .collect();
+    if !existing.is_empty() {
+        return Err(format!(
+            "O diretório '{}' já contém artefatos de treinamento ({}). Para não perder progresso, use `--resume` para continuar ou informe um novo diretório em `--out`.",
+            out_dir.display(),
+            existing.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 pub fn run_train_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     run_train_neural_cli_with_cancel(args, true, None, out, err)
 }
@@ -2554,6 +2577,10 @@ pub fn run_train_neural_cli_with_cancel(
         }
         (tokenizer, resumed)
     } else {
+        if let Err(msg) = check_no_existing_training_artifacts(&out_dir) {
+            let _ = writeln!(err, "{}", msg);
+            return 1;
+        }
         let corpus_refs: Vec<&str> = split.train.iter().map(|s| s.as_str()).collect();
         let tokenizer = crate::tokenizer::BpeTokenizer::train_from_corpus(&corpus_refs, vocab_size);
 
@@ -3259,8 +3286,10 @@ fn run_autonomous_marathon(
     let latest_ckpt = params.out_dir.join("latest.bin");
 
     if !params.resume {
-        let _ = std::fs::remove_file(params.out_dir.join("evolution_log.jsonl"));
-        let _ = std::fs::remove_file(params.out_dir.join("training_evolution.md"));
+        if let Err(msg) = check_no_existing_training_artifacts(&params.out_dir) {
+            let _ = writeln!(err, "{}", msg);
+            return 1;
+        }
     }
 
     let (tokenizer, mut trainer) = if params.resume && tok_path.is_file() && latest_ckpt.is_file() {
@@ -3517,11 +3546,22 @@ fn run_autonomous_marathon(
     // --- ESTÁGIO 2: FINE-TUNING SUPERVISIONADO EM CHAT TÉCNICO (`<user> ... <assistant>`) ---
     if !was_cancelled {
         // Reinicia `best_val_loss` especificamente para selecionar o melhor modelo de diálogo na Fase 2
-        trainer.best_val_loss = crate::training::evaluate_masked_loss(
+        trainer.best_val_loss = match crate::training::evaluate_masked_loss(
             &trainer.model,
             &qa_val_masked,
             tokenizer.pad_id(),
-        );
+        ) {
+            Some(v) if v.is_finite() => v,
+            Some(non_finite) => {
+                let _ = writeln!(
+                    err,
+                    "[AVISO DE VALIDAÇÃO] Início da Fase 2 com val_loss não finita ({}); best_val_loss mantido em INFINITY.",
+                    non_finite
+                );
+                f32::INFINITY
+            }
+            None => f32::INFINITY,
+        };
         let _ = crate::neural::save_checkpoint(
             &params.out_dir.join("best.bin"),
             &trainer.model,
@@ -3575,7 +3615,8 @@ fn run_autonomous_marathon(
                     &trainer.model,
                     &qa_val_masked,
                     tokenizer.pad_id(),
-                );
+                )
+                .filter(|v| v.is_finite());
                 recorder.record_milestone(
                     if was_cancelled {
                         "Marco Final (Pausado em Ctrl+C)"
@@ -3586,7 +3627,7 @@ fn run_autonomous_marathon(
                     &tokenizer,
                     rep.steps_completed,
                     Some(rep.final_train_loss),
-                    Some(final_val),
+                    final_val,
                     0.0,
                     trainer.config.min_learning_rate,
                     rep.tokens_per_sec,

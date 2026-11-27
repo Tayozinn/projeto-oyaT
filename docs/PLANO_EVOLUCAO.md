@@ -70,9 +70,9 @@ São 17 itens, todos da Fase 1 (P0 e P1) ou de manutenção (P2). P0 = perde dad
 
 | ID | Problema | Onde | Prio. | Esforço | Pronto quando | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| A1 | Treino novo apaga `best.bin`, `latest.bin` e `metrics.jsonl` do diretório, e a maratona apaga os logs | `training/mod.rs`; `cli.rs` maratona | P0 | 2h | Um segundo treino no mesmo diretório recusa ou move para backup, com teste | Não iniciado |
-| A2 | `evaluate_loss` devolve 0.0 sem tokens e congela o `best.bin`; `val_loss` NaN é ignorada | `training/mod.rs`; `cli.rs` estágio 2 | P0 | 2h | Retorna `Option<f32>`, NaN gera aviso, com teste | Não iniciado |
-| A3 | `train-neural` ignora `cancel_flag` e força o handler de Ctrl+C | `main.rs` L49 | P0 | 30min | Usa `run_train_neural_cli_with_cancel` com os parâmetros do dispatch | Não iniciado |
+| A1 | Treino novo apaga `best.bin`, `latest.bin` e `metrics.jsonl` do diretório, e a maratona apaga os logs | `training/mod.rs`; `cli.rs` maratona | P0 | 2h | Um segundo treino no mesmo diretório recusa ou move para backup, com teste | Concluído |
+| A2 | `evaluate_loss` devolve 0.0 sem tokens e congela o `best.bin`; `val_loss` NaN é ignorada | `training/mod.rs`; `cli.rs` estágio 2 | P0 | 2h | Retorna `Option<f32>`, NaN gera aviso, com teste | Concluído |
+| A3 | `train-neural` ignora `cancel_flag` e força o handler de Ctrl+C | `main.rs` L49 | P0 | 30min | Usa `run_train_neural_cli_with_cancel` com os parâmetros do dispatch | Concluído |
 | A4 | Mensagem que começa com `/` vira comando (ex.: `/var/log/...`) | `cli.rs` L50 | P1 | 1h | `/` só é comando se a palavra for conhecida; teste com `/var/log` | Não iniciado |
 | A5 | `eval-neural` engole erro de dataset e de serialização | `cli.rs` | P1 | 30min | Dataset ausente sai com código 1 e mensagem clara | Não iniciado |
 | A6 | `load_seed_corpus` aceita linha sem `prompt` ou `response` | `cli.rs` | P1 | 1h | Erro com o número da linha, com teste | Não iniciado |
