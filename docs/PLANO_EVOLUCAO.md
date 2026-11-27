@@ -73,10 +73,10 @@ São 17 itens, todos da Fase 1 (P0 e P1) ou de manutenção (P2). P0 = perde dad
 | A1 | Treino novo apaga `best.bin`, `latest.bin` e `metrics.jsonl` do diretório, e a maratona apaga os logs | `training/mod.rs`; `cli.rs` maratona | P0 | 2h | Um segundo treino no mesmo diretório recusa ou move para backup, com teste | Concluído |
 | A2 | `evaluate_loss` devolve 0.0 sem tokens e congela o `best.bin`; `val_loss` NaN é ignorada | `training/mod.rs`; `cli.rs` estágio 2 | P0 | 2h | Retorna `Option<f32>`, NaN gera aviso, com teste | Concluído |
 | A3 | `train-neural` ignora `cancel_flag` e força o handler de Ctrl+C | `main.rs` L49 | P0 | 30min | Usa `run_train_neural_cli_with_cancel` com os parâmetros do dispatch | Concluído |
-| A4 | Mensagem que começa com `/` vira comando (ex.: `/var/log/...`) | `cli.rs` L50 | P1 | 1h | `/` só é comando se a palavra for conhecida; teste com `/var/log` | Não iniciado |
-| A5 | `eval-neural` engole erro de dataset e de serialização | `cli.rs` | P1 | 30min | Dataset ausente sai com código 1 e mensagem clara | Não iniciado |
-| A6 | `load_seed_corpus` aceita linha sem `prompt` ou `response` | `cli.rs` | P1 | 1h | Erro com o número da linha, com teste | Não iniciado |
-| A7 | Maratona com `--resume` sem checkpoint treina do zero em silêncio | `cli.rs` | P1 | 1h | Falha com erro claro, como o modo normal | Não iniciado |
+| A4 | Mensagem que começa com `/` vira comando (ex.: `/var/log/...`) | `cli.rs` L50 | P1 | 1h | `/` só é comando se a palavra for conhecida; teste com `/var/log` | Concluído |
+| A5 | `eval-neural` engole erro de dataset e de serialização | `cli.rs` | P1 | 30min | Dataset ausente sai com código 1 e mensagem clara | Concluído |
+| A6 | `load_seed_corpus` aceita linha sem `prompt` ou `response` | `cli.rs` | P1 | 1h | Erro com o número da linha, com teste | Concluído |
+| A7 | Maratona com `--resume` sem checkpoint treina do zero em silêncio | `cli.rs` | P1 | 1h | Falha com erro claro, como o modo normal | Concluído |
 | A8 | O spinner soma até 500 ms a cada resposta e disputa a tela com o primeiro trecho | `cli.rs` L60–82 | P1 | 2h | Spinner com canal e `recv_timeout`; join antes do primeiro print | Não iniciado |
 | A9 | Erro no meio do treino perde o progresso, e falha ao gravar métrica é fatal | `training/mod.rs` (loop) | P1 | 3h | Checkpoint de emergência; falha de métrica só avisa | Não iniciado |
 | A10 | Checkpoints não são gravados de forma atômica | `neural/mod.rs` (`save_checkpoint` / `save_quantized_checkpoint`) | P1 | 2h | Grava em `.tmp`, `sync_all` e `rename` | Já implementado no código (validar cobertura de teste na Fase 1) |

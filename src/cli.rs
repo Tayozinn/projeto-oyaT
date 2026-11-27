@@ -47,7 +47,7 @@ pub fn run_terminal_loop(session: &mut AgentSession) {
                     continue;
                 }
 
-                if trimmed.starts_with(':') || trimmed.starts_with('/') {
+                if is_repl_command_input(trimmed) {
                     if handle_command(trimmed, session) {
                         break;
                     }
@@ -176,6 +176,80 @@ fn print_health_report(session: &AgentSession) {
             eprintln!("{}", msg);
         }
     }
+}
+
+fn is_known_repl_command_name(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "quit"
+            | "exit"
+            | "sair"
+            | "q"
+            | "help"
+            | "ajuda"
+            | "h"
+            | "?"
+            | "models"
+            | "model"
+            | "modelos"
+            | "modelo"
+            | "history"
+            | "historico"
+            | "hist"
+            | "load"
+            | "open"
+            | "carregar"
+            | "abrir"
+            | "new"
+            | "nova"
+            | "instructions"
+            | "instruction"
+            | "prompt"
+            | "instrucoes"
+            | "instrucao"
+            | "remember"
+            | "lembrar"
+            | "memorizar"
+            | "memories"
+            | "memorias"
+            | "memory"
+            | "forget"
+            | "esquecer"
+            | "context"
+            | "contexto"
+            | "status"
+            | "kb"
+            | "estudo"
+            | "study"
+            | "backend"
+            | "hw"
+            | "hardware"
+            | "train"
+            | "treinar"
+            | "exp"
+            | "experiencias"
+            | "quantize"
+            | "quantizar"
+    )
+}
+
+/// Verifica se a linha digitada no REPL deve ser tratada como comando (e não mensagem de chat).
+/// Comandos com `:` sempre entram no dispatcher (para sinalizar erro caso desconheça `:foo`),
+/// enquanto entradas com `/` só são comandos se a primeira palavra for um comando conhecido
+/// (permitindo enviar caminhos Unix como `/var/log/nginx/error.log` normalmente ao chat).
+pub(crate) fn is_repl_command_input(trimmed: &str) -> bool {
+    if trimmed.starts_with(':') {
+        return true;
+    }
+    if let Some(without_slash) = trimmed.strip_prefix('/') {
+        let raw_cmd = without_slash
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        return is_known_repl_command_name(&raw_cmd);
+    }
+    false
 }
 
 /// Processa comandos iniciados por `:` ou `/`. Retorna `true` se o programa deve encerrar.
@@ -2026,30 +2100,56 @@ fn load_seed_corpus(dataset_path: &std::path::Path) -> Result<Vec<String>, Strin
     let raw = std::fs::read_to_string(dataset_path)
         .map_err(|e| format!("Falha ao ler dataset '{}': {}", dataset_path.display(), e))?;
     let mut examples = Vec::new();
-    for line in raw.lines() {
+    for (idx, line) in raw.lines().enumerate() {
+        let line_no = idx + 1;
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        let val: serde_json::Value = serde_json::from_str(trimmed)
-            .map_err(|e| format!("Linha JSON inválida em '{}': {}", dataset_path.display(), e))?;
-        let dialogue = if let Some(turns) = val.get("turns").and_then(|v| v.as_array()) {
+        let val: serde_json::Value = serde_json::from_str(trimmed).map_err(|e| {
+            format!(
+                "Linha JSON inválida em '{}' (linha {}): {}",
+                dataset_path.display(),
+                line_no,
+                e
+            )
+        })?;
+        let dialogue = if let Some(turns_val) = val.get("turns") {
+            let turns = turns_val.as_array().ok_or_else(|| {
+                format!(
+                    "Campo 'turns' inválido em '{}' (linha {}): esperado array não vazio.",
+                    dataset_path.display(),
+                    line_no
+                )
+            })?;
+            if turns.is_empty() {
+                return Err(format!(
+                    "Campo 'turns' vazio em '{}' (linha {}).",
+                    dataset_path.display(),
+                    line_no
+                ));
+            }
             let mut buf = String::new();
-            for turn in turns {
+            for (t_idx, turn) in turns.iter().enumerate() {
                 let u = turn
                     .get("user")
                     .or_else(|| turn.get("prompt"))
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim();
+                    .map(|s| s.trim())
+                    .unwrap_or("");
                 let a = turn
                     .get("assistant")
                     .or_else(|| turn.get("response"))
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim();
-                if u.is_empty() && a.is_empty() {
-                    continue;
+                    .map(|s| s.trim())
+                    .unwrap_or("");
+                if u.is_empty() || a.is_empty() {
+                    return Err(format!(
+                        "Turno #{} incompleto em '{}' (linha {}): 'user' e 'assistant' são obrigatórios e não podem ser vazios.",
+                        t_idx + 1,
+                        dataset_path.display(),
+                        line_no
+                    ));
                 }
                 if !buf.is_empty() {
                     buf.push('\n');
@@ -2058,8 +2158,23 @@ fn load_seed_corpus(dataset_path: &std::path::Path) -> Result<Vec<String>, Strin
             }
             buf
         } else {
-            let prompt = val.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-            let response = val.get("response").and_then(|v| v.as_str()).unwrap_or("");
+            let prompt = val
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .unwrap_or("");
+            let response = val
+                .get("response")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .unwrap_or("");
+            if prompt.is_empty() || response.is_empty() {
+                return Err(format!(
+                    "Registro inválido em '{}' (linha {}): campos 'prompt' e 'response' são obrigatórios e não podem ser vazios.",
+                    dataset_path.display(),
+                    line_no
+                ));
+            }
             format!("<user> {}\n<assistant> {}", prompt, response)
         };
         let norm = crate::tokenizer::normalize_corpus_text(&dialogue);
@@ -3292,7 +3407,16 @@ fn run_autonomous_marathon(
         }
     }
 
-    let (tokenizer, mut trainer) = if params.resume && tok_path.is_file() && latest_ckpt.is_file() {
+    let (tokenizer, mut trainer) = if params.resume {
+        if !tok_path.is_file() || !latest_ckpt.is_file() {
+            let _ = writeln!(
+                err,
+                "Flag --resume exige '{}' e '{}' existentes.",
+                tok_path.display(),
+                latest_ckpt.display()
+            );
+            return 1;
+        }
         let tok = match crate::tokenizer::BpeTokenizer::load(&tok_path) {
             Ok(t) => t,
             Err(e) => {
@@ -3967,9 +4091,21 @@ pub fn run_eval_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn W
         }
     }
 
-    let val_texts = load_seed_corpus(&dataset_path).unwrap_or_default();
+    let val_texts = match load_seed_corpus(&dataset_path) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = writeln!(err, "{}", e);
+            return 1;
+        }
+    };
     let summary = crate::evaluation::evaluate_neural_engine(&engine, &val_texts);
-    let mut json_val = serde_json::to_value(&summary).unwrap_or(serde_json::Value::Null);
+    let mut json_val = match serde_json::to_value(&summary) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = writeln!(err, "Falha ao serializar resumo de avaliação: {}", e);
+            return 1;
+        }
+    };
     if let Some(obj) = json_val.as_object_mut() {
         obj.insert(
             "runtime_profile".to_string(),
@@ -4001,7 +4137,13 @@ pub fn run_eval_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn W
             ),
         );
     }
-    let json = serde_json::to_string_pretty(&json_val).unwrap_or_default();
+    let json = match serde_json::to_string_pretty(&json_val) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = writeln!(err, "Falha ao formatar JSON de avaliação: {}", e);
+            return 1;
+        }
+    };
     let _ = writeln!(out, "{}", json);
     0
 }

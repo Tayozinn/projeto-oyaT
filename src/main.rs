@@ -1803,4 +1803,219 @@ mod tests {
             "train-neural via dispatch deve honrar cancel_flag e sair com 130"
         );
     }
+
+    #[test]
+    fn test_phase1_a4_slash_paths_are_not_mistaken_for_repl_commands() {
+        // Comandos explícitos com `:` sempre são tratados como comando (mesmo inválidos, para dar feedback)
+        assert!(crate::cli::is_repl_command_input(":help"));
+        assert!(crate::cli::is_repl_command_input(":invalido"));
+
+        // Comandos conhecidos com `/` são reconhecidos como comandos
+        assert!(crate::cli::is_repl_command_input("/help"));
+        assert!(crate::cli::is_repl_command_input("/ajuda"));
+        assert!(crate::cli::is_repl_command_input("/quit"));
+        assert!(crate::cli::is_repl_command_input("/models llama3.2"));
+        assert!(crate::cli::is_repl_command_input("/backend neural"));
+
+        // Caminhos Unix colados pelo usuário NÃO podem virar comando do REPL!
+        assert!(!crate::cli::is_repl_command_input(
+            "/var/log/nginx/error.log está enchendo o disco"
+        ));
+        assert!(!crate::cli::is_repl_command_input("/etc/fstab"));
+        assert!(!crate::cli::is_repl_command_input(
+            "/usr/bin/systemctl status nginx"
+        ));
+        assert!(!crate::cli::is_repl_command_input(
+            "/home/admin/.ssh/authorized_keys"
+        ));
+    }
+
+    #[test]
+    fn test_phase1_a5_eval_neural_fails_explicitly_on_missing_or_invalid_dataset() {
+        let temp = TempDirGuard::new("a5_eval_neural_ds");
+        let ckpt_dir = temp.path.join("ckpt");
+        fs::create_dir_all(&ckpt_dir).unwrap();
+
+        let corpus = ["<user> Como ver portas? <assistant> Execute ss -tulnp."];
+        let tok = crate::tokenizer::BpeTokenizer::train_from_corpus(&corpus, 300);
+        tok.save(&ckpt_dir.join("tokenizer.json")).unwrap();
+        let cfg = crate::neural::TransformerConfig {
+            vocab_size: tok.vocab_size(),
+            max_seq_len: 32,
+            d_model: 16,
+            n_heads: 2,
+            n_layers: 1,
+            d_ff: 32,
+        };
+        let model = crate::neural::ServerMindTransformer::new_random(cfg, 7).unwrap();
+        crate::neural::save_checkpoint(&ckpt_dir.join("best.bin"), &model, None, 1, 1.5).unwrap();
+
+        let ckpt_str = ckpt_dir.to_string_lossy().into_owned();
+        let missing_ds = temp
+            .path
+            .join("dataset_inexistente.jsonl")
+            .to_string_lossy()
+            .into_owned();
+
+        let (code, out, err) = run_cli_capture(
+            &[
+                "servermind-ai",
+                "eval-neural",
+                "--dir",
+                &ckpt_str,
+                "--dataset",
+                &missing_ds,
+            ],
+            None,
+        );
+        assert_eq!(
+            code,
+            Some(1),
+            "eval-neural com dataset ausente deve retornar 1"
+        );
+        assert!(
+            out.trim().is_empty(),
+            "stdout deveria estar vazio em falha: {}",
+            out
+        );
+        assert!(
+            err.contains("dataset_inexistente.jsonl"),
+            "stderr deveria citar o caminho ausente: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_phase1_a6_load_seed_corpus_rejects_missing_fields_with_line_number() {
+        let temp = TempDirGuard::new("a6_seed_corpus_lines");
+        let out_dir = temp.path.join("ckpt");
+
+        // Caso 1: linha 2 sem campo `response`
+        let bad_missing_resp = temp.path.join("missing_resp.jsonl");
+        fs::write(
+            &bad_missing_resp,
+            "{\"prompt\":\"Pergunta 1\",\"response\":\"Resposta 1\"}\n\
+             {\"prompt\":\"Pergunta sem resposta\"}\n",
+        )
+        .unwrap();
+        let (c1, _, err1) = run_cli_capture(
+            &[
+                "servermind-ai",
+                "train-neural",
+                "--dataset",
+                &bad_missing_resp.to_string_lossy(),
+                "--out",
+                &out_dir.to_string_lossy(),
+                "--steps",
+                "1",
+            ],
+            None,
+        );
+        assert_eq!(c1, Some(1));
+        assert!(
+            err1.contains("linha 2"),
+            "erro deveria apontar 'linha 2', obtido: {}",
+            err1
+        );
+
+        // Caso 2: linha 3 com `prompt` vazio em espaços
+        let bad_empty_prompt = temp.path.join("empty_prompt.jsonl");
+        fs::write(
+            &bad_empty_prompt,
+            "{\"prompt\":\"Pergunta 1\",\"response\":\"Resposta 1\"}\n\n\
+             {\"prompt\":\"   \",\"response\":\"Resposta órfã\"}\n",
+        )
+        .unwrap();
+        let (c2, _, err2) = run_cli_capture(
+            &[
+                "servermind-ai",
+                "train-neural",
+                "--dataset",
+                &bad_empty_prompt.to_string_lossy(),
+                "--out",
+                &out_dir.to_string_lossy(),
+                "--steps",
+                "1",
+            ],
+            None,
+        );
+        assert_eq!(c2, Some(1));
+        assert!(
+            err2.contains("linha 3"),
+            "erro deveria apontar 'linha 3', obtido: {}",
+            err2
+        );
+
+        // Caso 3: linha 4 com JSON sintaticamente quebrado
+        let bad_json = temp.path.join("broken_json.jsonl");
+        fs::write(
+            &bad_json,
+            "{\"prompt\":\"P1\",\"response\":\"R1\"}\n\
+             {\"prompt\":\"P2\",\"response\":\"R2\"}\n\
+             \n\
+             {json_invalido\n",
+        )
+        .unwrap();
+        let (c3, _, err3) = run_cli_capture(
+            &[
+                "servermind-ai",
+                "train-neural",
+                "--dataset",
+                &bad_json.to_string_lossy(),
+                "--out",
+                &out_dir.to_string_lossy(),
+                "--steps",
+                "1",
+            ],
+            None,
+        );
+        assert_eq!(c3, Some(1));
+        assert!(
+            err3.contains("linha 4"),
+            "erro deveria apontar 'linha 4', obtido: {}",
+            err3
+        );
+    }
+
+    #[test]
+    fn test_phase1_a7_marathon_resume_without_checkpoint_fails_cleanly() {
+        let temp = TempDirGuard::new("a7_marathon_resume_missing");
+        let ds_path = temp.path.join("qa.jsonl");
+        let empty_ckpt_dir = temp.path.join("empty_ckpt");
+        fs::write(
+            &ds_path,
+            "{\"prompt\":\"Como ver portas?\",\"response\":\"Use ss -tulnp.\"}\n",
+        )
+        .unwrap();
+
+        let (code, _out, err) = run_cli_capture(
+            &[
+                "servermind-ai",
+                "train-neural",
+                "--marathon",
+                "--resume",
+                "--max-duration",
+                "1s",
+                "--dataset",
+                &ds_path.to_string_lossy(),
+                "--out",
+                &empty_ckpt_dir.to_string_lossy(),
+            ],
+            None,
+        );
+        assert_eq!(
+            code,
+            Some(1),
+            "maratona com --resume sem checkpoint deve falhar com código 1"
+        );
+        assert!(
+            err.contains("--resume") && err.contains("latest.bin"),
+            "stderr inesperado: {}",
+            err
+        );
+        assert!(
+            !empty_ckpt_dir.join("best.bin").exists(),
+            "não deveria ter iniciado treino do zero!"
+        );
+    }
 }
