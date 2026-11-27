@@ -812,34 +812,7 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    struct TempDirGuard {
-        path: PathBuf,
-    }
-
-    impl TempDirGuard {
-        fn new(prefix: &str) -> Self {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
-            let dir = env::temp_dir().join(format!(
-                "servermind_cfg_test_{}_{}_{}",
-                prefix,
-                std::process::id(),
-                nanos
-            ));
-            fs::create_dir_all(&dir).expect("deve criar diretório temporário de teste");
-            Self { path: dir }
-        }
-    }
-
-    impl Drop for TempDirGuard {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
+    use crate::test_support::TempDirGuard;
 
     #[test]
     fn test_validate_local_url_accepts_valid_loopback_endpoints() {

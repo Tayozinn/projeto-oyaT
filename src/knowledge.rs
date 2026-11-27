@@ -10,7 +10,10 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-const EMBEDDED_KB_JSON: &str = include_str!("../knowledge/sysadmin_kb.json");
+const EMBEDDED_KB_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/knowledge/sysadmin_kb.json"
+));
 pub const DEFAULT_KB_RELATIVE_PATH: &str = "knowledge/sysadmin_kb.json";
 
 #[derive(Debug, Clone, Deserialize)]

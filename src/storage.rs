@@ -686,41 +686,7 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(1);
-
-    struct TempDirGuard {
-        path: PathBuf,
-    }
-
-    impl TempDirGuard {
-        fn new(prefix: &str) -> Self {
-            let seq = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
-            let dir = env::temp_dir().join(format!(
-                "servermind_storage_tx_test_{}_{}_{}_{}",
-                prefix,
-                std::process::id(),
-                seq,
-                nanos
-            ));
-            fs::create_dir_all(&dir).expect("deve criar diretório temporário de teste");
-            Self { path: dir }
-        }
-    }
-
-    impl Drop for TempDirGuard {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
+    use crate::test_support::TempDirGuard;
 
     #[test]
     fn test_save_conversation_turn_commits_messages_and_title_atomically() {

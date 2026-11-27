@@ -1602,39 +1602,8 @@ mod tests {
     use super::*;
     use crate::eval_dataset::load_and_validate_dataset;
     use crate::eval_metrics::{evaluate_deterministic, parse_judge_response};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use crate::test_support::TempDirGuard;
     use std::time::Duration;
-
-    static TEST_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
-
-    struct TempDirGuard {
-        path: PathBuf,
-    }
-
-    impl TempDirGuard {
-        fn new(prefix: &str) -> Self {
-            let seq = TEST_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "servermind_{}_{}_{}_{}",
-                prefix,
-                std::process::id(),
-                nanos,
-                seq
-            ));
-            fs::create_dir_all(&path).expect("deve criar diretório temporário de teste");
-            Self { path }
-        }
-    }
-
-    impl Drop for TempDirGuard {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
 
     fn load_real_dataset() -> LoadedDataset {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))

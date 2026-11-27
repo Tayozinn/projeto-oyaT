@@ -559,12 +559,12 @@ impl Trainer {
         })?;
 
         let ctrlc_guard = if session_opts.install_ctrlc_handler {
-            Some(crate::eval_runner::CtrlCGuard::install())
+            Some(crate::platform::signals::CtrlCGuard::install())
         } else {
             None
         };
         let is_cancelled = |ext_flag: &Option<Arc<AtomicBool>>,
-                            guard: &Option<crate::eval_runner::CtrlCGuard>|
+                            guard: &Option<crate::platform::signals::CtrlCGuard>|
          -> bool {
             ext_flag
                 .as_ref()

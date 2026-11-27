@@ -343,87 +343,7 @@ pub fn validate_repeat(repeat: usize) -> Result<usize, String> {
     Ok(repeat)
 }
 
-// ---------------------------------------------------------------------------
-// Guarda RAII para cancelamento limpo com Ctrl+C (zero crates externas)
-// ---------------------------------------------------------------------------
-
-#[cfg(windows)]
-mod ctrlc_imp {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    type Bool = i32;
-    type Dword = u32;
-    type HandlerRoutine = unsafe extern "system" fn(Dword) -> Bool;
-
-    const CTRL_C_EVENT: Dword = 0;
-    const CTRL_BREAK_EVENT: Dword = 1;
-    const TRUE: Bool = 1;
-    const FALSE: Bool = 0;
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn SetConsoleCtrlHandler(handler: Option<HandlerRoutine>, add: Bool) -> Bool;
-    }
-
-    static GLOBAL_CTRL_C_TRIGGERED: AtomicBool = AtomicBool::new(false);
-
-    unsafe extern "system" fn console_ctrl_handler(ctrl_type: Dword) -> Bool {
-        if ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_BREAK_EVENT {
-            GLOBAL_CTRL_C_TRIGGERED.store(true, Ordering::SeqCst);
-            TRUE
-        } else {
-            FALSE
-        }
-    }
-
-    /// Guarda RAII que registra o handler de `Ctrl+C` no console do Windows e o remove no `Drop`.
-    pub struct CtrlCGuard {
-        registered: bool,
-    }
-
-    impl CtrlCGuard {
-        pub fn install() -> Self {
-            GLOBAL_CTRL_C_TRIGGERED.store(false, Ordering::SeqCst);
-            // SAFETY: `console_ctrl_handler` respeita a assinatura `extern "system" fn(u32) -> i32`
-            // da API Win32 e realiza apenas escrita atômica em `GLOBAL_CTRL_C_TRIGGERED`.
-            let ok = unsafe { SetConsoleCtrlHandler(Some(console_ctrl_handler), TRUE) != 0 };
-            Self { registered: ok }
-        }
-
-        pub fn is_triggered(&self) -> bool {
-            GLOBAL_CTRL_C_TRIGGERED.load(Ordering::SeqCst)
-        }
-    }
-
-    impl Drop for CtrlCGuard {
-        fn drop(&mut self) {
-            if self.registered {
-                // SAFETY: desregistra o mesmo handler instalado em `install`.
-                unsafe {
-                    let _ = SetConsoleCtrlHandler(Some(console_ctrl_handler), FALSE);
-                }
-            }
-        }
-    }
-}
-
-#[cfg(not(windows))]
-mod ctrlc_imp {
-    /// Guarda RAII de compatibilidade em plataformas não-Windows (sem dependências externas).
-    pub struct CtrlCGuard;
-
-    impl CtrlCGuard {
-        pub fn install() -> Self {
-            Self
-        }
-
-        pub fn is_triggered(&self) -> bool {
-            false
-        }
-    }
-}
-
-pub use ctrlc_imp::CtrlCGuard;
+use crate::platform::signals::CtrlCGuard;
 
 // ---------------------------------------------------------------------------
 // Abstração do cliente de modelos locais (real + mockável em testes)
@@ -1133,44 +1053,11 @@ mod tests {
     use super::*;
     use crate::config::{CREATOR_IDENTITY_INSTRUCTION, IMMUTABLE_SAFETY_INSTRUCTIONS};
     use crate::ollama::OllamaModelDetails;
+    use crate::test_support::TempDirGuard;
     use std::cell::RefCell;
     use std::collections::VecDeque;
-    use std::fs;
     use std::path::Path;
-    use std::sync::atomic::AtomicU64;
     use std::thread;
-    use std::time::UNIX_EPOCH;
-
-    static TEST_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
-
-    struct TempDirGuard {
-        path: PathBuf,
-    }
-
-    impl TempDirGuard {
-        fn new(prefix: &str) -> Self {
-            let seq = TEST_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "servermind_runner_{}_{}_{}_{}",
-                prefix,
-                std::process::id(),
-                nanos,
-                seq
-            ));
-            fs::create_dir_all(&path).expect("deve criar diretório temporário de teste");
-            Self { path }
-        }
-    }
-
-    impl Drop for TempDirGuard {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
 
     fn real_dataset_path() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1510,14 +1397,14 @@ mod tests {
     fn test_run_evaluation_respects_max_duration_and_caps_request_timeout() {
         let tmp = TempDirGuard::new("max_duration");
         let mut client = MockEvalClient::with_responses(Vec::new());
-        client.per_call_sleep = Duration::from_millis(25);
+        client.per_call_sleep = Duration::from_millis(60);
 
         let mut cfg = EvalRunConfig::new("llama3.2");
         cfg.dataset_path = real_dataset_path();
         cfg.out_dir = tmp.path.clone();
         cfg.filter.limit = Some(4);
         cfg.timeout_secs = 120;
-        cfg.max_duration = Some(Duration::from_millis(35));
+        cfg.max_duration = Some(Duration::from_millis(100));
 
         let outcome = run_evaluation(&client, &cfg).expect("max_duration deve gerar relatório");
         let st = &outcome.report.execution_stats;
@@ -1527,7 +1414,7 @@ mod tests {
         let timeouts = client.recorded_timeouts.borrow();
         assert!(!timeouts.is_empty());
         for t in timeouts.iter() {
-            assert!(*t <= Duration::from_millis(35));
+            assert!(*t <= Duration::from_millis(100));
         }
     }
 
@@ -1553,12 +1440,5 @@ mod tests {
         let err_judge =
             run_evaluation(&client, &cfg_judge).expect_err("deve rejeitar juiz não instalado");
         assert!(err_judge.contains("não está instalado"));
-    }
-
-    #[test]
-    fn test_ctrlc_guard_install_and_drop() {
-        let guard = CtrlCGuard::install();
-        assert!(!guard.is_triggered());
-        drop(guard);
     }
 }
