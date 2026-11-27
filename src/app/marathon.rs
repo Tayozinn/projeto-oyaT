@@ -1,5 +1,6 @@
 use super::corpus::{check_no_existing_training_artifacts, load_seed_corpus};
 use super::quantize::export_quantized_package;
+use crate::cli::error::{CliError, CliResult};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -382,14 +383,9 @@ pub(crate) fn run_autonomous_marathon(
     params: MarathonParams,
     out: &mut dyn Write,
     err: &mut dyn Write,
-) -> i32 {
-    let qa_examples = match load_qa_datasets_combined(params.dataset_override.as_ref()) {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = writeln!(err, "{}", e);
-            return 1;
-        }
-    };
+) -> CliResult<()> {
+    let qa_examples =
+        load_qa_datasets_combined(params.dataset_override.as_ref()).map_err(CliError::runtime)?;
 
     let mut book_chunks = Vec::new();
     let book_dirs = if !params.corpus_dirs_override.is_empty() {
@@ -404,13 +400,9 @@ pub(crate) fn run_autonomous_marathon(
         }
     };
     for bdir in &book_dirs {
-        match crate::neural::tokenizer::load_corpus_directory(bdir, params.chunk_chars) {
-            Ok(mut c) => book_chunks.append(&mut c),
-            Err(e) => {
-                let _ = writeln!(err, "{}", e);
-                return 1;
-            }
-        }
+        let mut c = crate::neural::tokenizer::load_corpus_directory(bdir, params.chunk_chars)
+            .map_err(CliError::runtime)?;
+        book_chunks.append(&mut c);
     }
 
     let has_pretrain_books = !book_chunks.is_empty();
@@ -437,29 +429,19 @@ pub(crate) fn run_autonomous_marathon(
     let latest_ckpt = params.out_dir.join("latest.bin");
 
     if !params.resume {
-        if let Err(msg) = check_no_existing_training_artifacts(&params.out_dir) {
-            let _ = writeln!(err, "{}", msg);
-            return 1;
-        }
+        check_no_existing_training_artifacts(&params.out_dir).map_err(CliError::runtime)?;
     }
 
     let (tokenizer, mut trainer) = if params.resume {
         if !tok_path.is_file() || !latest_ckpt.is_file() {
-            let _ = writeln!(
-                err,
+            return Err(CliError::runtime(format!(
                 "Flag --resume exige '{}' e '{}' existentes.",
                 tok_path.display(),
                 latest_ckpt.display()
-            );
-            return 1;
+            )));
         }
-        let tok = match crate::neural::tokenizer::BpeTokenizer::load(&tok_path) {
-            Ok(t) => t,
-            Err(e) => {
-                let _ = writeln!(err, "{}", e);
-                return 1;
-            }
-        };
+        let tok =
+            crate::neural::tokenizer::BpeTokenizer::load(&tok_path).map_err(CliError::runtime)?;
         let cfg = crate::neural::training::TrainingConfig {
             run_name: run_name.clone(),
             checkpoint_dir: params.out_dir.clone(),
@@ -476,19 +458,17 @@ pub(crate) fn run_autonomous_marathon(
             max_val_windows: params.max_val_windows,
             device: params.device,
         };
-        let tr = match crate::neural::training::Trainer::resume_from_checkpoint(&latest_ckpt, cfg) {
-            Ok(t) => t,
-            Err(e) => {
-                let _ = writeln!(err, "{}", e);
-                return 1;
-            }
-        };
+        let tr = crate::neural::training::Trainer::resume_from_checkpoint(&latest_ckpt, cfg)
+            .map_err(CliError::runtime)?;
         (tok, tr)
     } else {
-        if let Err(e) = std::fs::create_dir_all(&params.out_dir) {
-            let _ = writeln!(err, "Falha ao criar '{}': {}", params.out_dir.display(), e);
-            return 1;
-        }
+        std::fs::create_dir_all(&params.out_dir).map_err(|e| {
+            CliError::runtime(format!(
+                "Falha ao criar '{}': {}",
+                params.out_dir.display(),
+                e
+            ))
+        })?;
         let _ = writeln!(
             out,
             "[1/3] Treinando tokenizador BPE próprio (vocab_alvo={}) sobre {} blocos de amostra...",
@@ -499,10 +479,7 @@ pub(crate) fn run_autonomous_marathon(
         let refs: Vec<&str> = combined_for_vocab.iter().map(|s| s.as_str()).collect();
         let tok =
             crate::neural::tokenizer::BpeTokenizer::train_from_corpus(&refs, params.vocab_size);
-        if let Err(e) = tok.save(&tok_path) {
-            let _ = writeln!(err, "{}", e);
-            return 1;
-        }
+        tok.save(&tok_path).map_err(CliError::runtime)?;
         let mcfg = crate::neural::TransformerConfig {
             vocab_size: tok.vocab_size(),
             max_seq_len: params.seq_len,
@@ -511,13 +488,8 @@ pub(crate) fn run_autonomous_marathon(
             n_layers: params.n_layers,
             d_ff: params.d_ff,
         };
-        let model = match crate::neural::ServerMindTransformer::new_random(mcfg, 2026) {
-            Ok(m) => m,
-            Err(e) => {
-                let _ = writeln!(err, "{}", e);
-                return 1;
-            }
-        };
+        let model = crate::neural::ServerMindTransformer::new_random(mcfg, 2026)
+            .map_err(CliError::runtime)?;
         let tcfg = crate::neural::training::TrainingConfig {
             run_name: run_name.clone(),
             checkpoint_dir: params.out_dir.clone(),
@@ -685,22 +657,16 @@ pub(crate) fn run_autonomous_marathon(
             trainer.train_with_session_options(&s1_train_wins, &[], tokenizer.pad_id(), None, opts)
         };
 
-        match s1_res {
-            Ok(rep) => {
-                active_device_str = rep.active_device;
-                was_cancelled = rep.cancelled;
-                let _ = writeln!(
-                    out,
-                    "\n>> [Transição de Fase] Estágio 1 finalizado em step={} (loss {:.4} -> {:.4}). Iniciando Estágio 2 (Chat Fine-Tuning)...",
-                    rep.steps_completed, rep.initial_train_loss, rep.final_train_loss
-                );
-                let _ = out.flush();
-            }
-            Err(e) => {
-                let _ = writeln!(err, "Erro no Estágio 1 da maratona: {}", e);
-                return 1;
-            }
-        }
+        let rep = s1_res
+            .map_err(|e| CliError::runtime(format!("Erro no Estágio 1 da maratona: {}", e)))?;
+        active_device_str = rep.active_device;
+        was_cancelled = rep.cancelled;
+        let _ = writeln!(
+            out,
+            "\n>> [Transição de Fase] Estágio 1 finalizado em step={} (loss {:.4} -> {:.4}). Iniciando Estágio 2 (Chat Fine-Tuning)...",
+            rep.steps_completed, rep.initial_train_loss, rep.final_train_loss
+        );
+        let _ = out.flush();
     }
 
     if !was_cancelled {
@@ -764,39 +730,33 @@ pub(crate) fn run_autonomous_marathon(
             trainer.train_with_session_options(&[], &[], tokenizer.pad_id(), None, opts)
         };
 
-        match s2_res {
-            Ok(rep) => {
-                active_device_str = rep.active_device;
-                was_cancelled = rep.cancelled;
-                let final_val = crate::neural::training::evaluate_masked_loss(
-                    &trainer.model,
-                    &qa_val_masked,
-                    tokenizer.pad_id(),
-                )
-                .filter(|v| v.is_finite());
-                recorder.record_milestone(
-                    if was_cancelled {
-                        "Marco Final (Pausado em Ctrl+C)"
-                    } else {
-                        "Marco Final Consolidado"
-                    },
-                    &trainer.model,
-                    &tokenizer,
-                    rep.steps_completed,
-                    Some(rep.final_train_loss),
-                    final_val,
-                    0.0,
-                    trainer.config.min_learning_rate,
-                    rep.tokens_per_sec,
-                    global_start.elapsed(),
-                    out,
-                );
-            }
-            Err(e) => {
-                let _ = writeln!(err, "Erro no Estágio 2 da maratona: {}", e);
-                return 1;
-            }
-        }
+        let rep = s2_res
+            .map_err(|e| CliError::runtime(format!("Erro no Estágio 2 da maratona: {}", e)))?;
+        active_device_str = rep.active_device;
+        was_cancelled = rep.cancelled;
+        let final_val = crate::neural::training::evaluate_masked_loss(
+            &trainer.model,
+            &qa_val_masked,
+            tokenizer.pad_id(),
+        )
+        .filter(|v| v.is_finite());
+        recorder.record_milestone(
+            if was_cancelled {
+                "Marco Final (Pausado em Ctrl+C)"
+            } else {
+                "Marco Final Consolidado"
+            },
+            &trainer.model,
+            &tokenizer,
+            rep.steps_completed,
+            Some(rep.final_train_loss),
+            final_val,
+            0.0,
+            trainer.config.min_learning_rate,
+            rep.tokens_per_sec,
+            global_start.elapsed(),
+            out,
+        );
     }
 
     let final_status = if was_cancelled {
@@ -850,8 +810,8 @@ pub(crate) fn run_autonomous_marathon(
     );
 
     if was_cancelled {
-        130
+        Err(CliError::cancelled())
     } else {
-        0
+        Ok(())
     }
 }

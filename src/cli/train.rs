@@ -2,6 +2,7 @@ pub(super) use crate::app::neural_service::DEFAULT_TRAIN_STEPS;
 use crate::app::neural_service::{
     execute_eval_neural, execute_train_neural, EvalNeuralRequest, TrainNeuralRequest,
 };
+use crate::cli::error::{CliError, CliResult};
 use crate::eval::runner::parse_duration_str;
 use std::io::Write;
 use std::path::PathBuf;
@@ -225,6 +226,25 @@ pub(crate) fn parse_train_neural_args(args: &[String]) -> Result<TrainCliParsed,
     Ok(TrainCliParsed::Run(Box::new(p)))
 }
 
+pub fn run_train_neural_cli_result(
+    args: &[String],
+    install_ctrlc_handler: bool,
+    cancel_flag: Option<Arc<AtomicBool>>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> CliResult<()> {
+    let parsed = match parse_train_neural_args(args) {
+        Ok(TrainCliParsed::Help) => {
+            print_train_neural_help(out);
+            return Ok(());
+        }
+        Ok(TrainCliParsed::Run(p)) => *p,
+        Err(msg) => return Err(CliError::usage(msg)),
+    };
+
+    execute_train_neural(parsed, install_ctrlc_handler, cancel_flag, out, err)
+}
+
 pub fn run_train_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     run_train_neural_cli_with_cancel(args, true, None, out, err)
 }
@@ -236,19 +256,10 @@ pub fn run_train_neural_cli_with_cancel(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
-    let parsed = match parse_train_neural_args(args) {
-        Ok(TrainCliParsed::Help) => {
-            print_train_neural_help(out);
-            return 0;
-        }
-        Ok(TrainCliParsed::Run(p)) => *p,
-        Err(msg) => {
-            let _ = writeln!(err, "{}", msg);
-            return 2;
-        }
-    };
-
-    execute_train_neural(parsed, install_ctrlc_handler, cancel_flag, out, err)
+    match run_train_neural_cli_result(args, install_ctrlc_handler, cancel_flag, out, err) {
+        Ok(()) => 0,
+        Err(e) => e.emit_and_code(err),
+    }
 }
 
 fn print_eval_neural_help(out: &mut dyn Write) {
@@ -359,17 +370,18 @@ pub(crate) fn parse_eval_neural_args(args: &[String]) -> Result<EvalNeuralCliPar
     Ok(EvalNeuralCliParsed::Run(p))
 }
 
-pub fn run_eval_neural_cli(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+pub fn run_eval_neural_cli_result(
+    args: &[String],
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> CliResult<()> {
     let parsed = match parse_eval_neural_args(args) {
         Ok(EvalNeuralCliParsed::Help) => {
             print_eval_neural_help(out);
-            return 0;
+            return Ok(());
         }
         Ok(EvalNeuralCliParsed::Run(p)) => p,
-        Err(msg) => {
-            let _ = writeln!(err, "{}", msg);
-            return 2;
-        }
+        Err(msg) => return Err(CliError::usage(msg)),
     };
 
     execute_eval_neural(parsed, out, err)

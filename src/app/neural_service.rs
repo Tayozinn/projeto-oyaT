@@ -3,6 +3,7 @@ use super::marathon::{
     format_hms, run_autonomous_marathon, EvolutionSequenceRecorder, MarathonParams,
 };
 use super::quantize::export_quantized_package;
+use crate::cli::error::{CliError, CliResult};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -57,7 +58,7 @@ pub(crate) fn execute_train_neural(
     cancel_flag: Option<Arc<AtomicBool>>,
     out: &mut dyn Write,
     err: &mut dyn Write,
-) -> i32 {
+) -> CliResult<()> {
     let TrainNeuralRequest {
         dataset_path,
         corpus_dirs,
@@ -148,23 +149,17 @@ pub(crate) fn execute_train_neural(
 
     let resolved_min_lr = min_learning_rate.unwrap_or(learning_rate * 0.1);
     if resolved_min_lr > learning_rate {
-        let _ = writeln!(
-            err,
+        return Err(CliError::usage(format!(
             "'--min-lr' ({}) não pode ser maior que '--lr' ({}).",
             resolved_min_lr, learning_rate
-        );
-        return 2;
+        )));
     }
 
     let mut examples = Vec::new();
     for dir in &corpus_dirs {
-        match crate::neural::tokenizer::load_corpus_directory(dir, chunk_chars) {
-            Ok(mut chunks) => examples.append(&mut chunks),
-            Err(e) => {
-                let _ = writeln!(err, "{}", e);
-                return 1;
-            }
-        }
+        let mut chunks = crate::neural::tokenizer::load_corpus_directory(dir, chunk_chars)
+            .map_err(CliError::runtime)?;
+        examples.append(&mut chunks);
     }
 
     let effective_dataset = if let Some(ref ds) = dataset_path {
@@ -178,18 +173,14 @@ pub(crate) fn execute_train_neural(
     };
 
     if let Some(ds_path) = effective_dataset {
-        match load_seed_corpus(&ds_path) {
-            Ok(mut ds_examples) => examples.append(&mut ds_examples),
-            Err(e) => {
-                let _ = writeln!(err, "{}", e);
-                return 1;
-            }
-        }
+        let mut ds_examples = load_seed_corpus(&ds_path).map_err(CliError::runtime)?;
+        examples.append(&mut ds_examples);
     }
 
     if examples.is_empty() {
-        let _ = writeln!(err, "Nenhum exemplo válido carregado para treinamento.");
-        return 1;
+        return Err(CliError::runtime(
+            "Nenhum exemplo válido carregado para treinamento.",
+        ));
     }
 
     let resolved_run_name = run_name.unwrap_or_else(|| {
@@ -207,21 +198,14 @@ pub(crate) fn execute_train_neural(
 
     let (tokenizer, mut trainer) = if resume {
         if !tok_path.is_file() || !latest_ckpt.is_file() {
-            let _ = writeln!(
-                err,
+            return Err(CliError::runtime(format!(
                 "Flag --resume exige '{}' e '{}' existentes.",
                 tok_path.display(),
                 latest_ckpt.display()
-            );
-            return 1;
+            )));
         }
-        let tokenizer = match crate::neural::tokenizer::BpeTokenizer::load(&tok_path) {
-            Ok(t) => t,
-            Err(e) => {
-                let _ = writeln!(err, "{}", e);
-                return 1;
-            }
-        };
+        let tokenizer =
+            crate::neural::tokenizer::BpeTokenizer::load(&tok_path).map_err(CliError::runtime)?;
         let train_cfg = crate::neural::training::TrainingConfig {
             run_name: resolved_run_name.clone(),
             checkpoint_dir: out_dir.clone(),
@@ -239,32 +223,22 @@ pub(crate) fn execute_train_neural(
             device,
         };
         let mut resumed =
-            match crate::neural::training::Trainer::resume_from_checkpoint(&latest_ckpt, train_cfg)
-            {
-                Ok(t) => t,
-                Err(e) => {
-                    let _ = writeln!(err, "{}", e);
-                    return 1;
-                }
-            };
+            crate::neural::training::Trainer::resume_from_checkpoint(&latest_ckpt, train_cfg)
+                .map_err(CliError::runtime)?;
         if tokenizer.vocab_size() != resumed.model.config.vocab_size {
-            let _ = writeln!(
-                err,
+            return Err(CliError::runtime(format!(
                 "Incompatibilidade em --resume: tokenizer tem vocab={} mas checkpoint tem vocab={}.",
                 tokenizer.vocab_size(),
                 resumed.model.config.vocab_size
-            );
-            return 1;
+            )));
         }
         if max_duration_opt.is_none() {
             if let Some(explicit_steps) = max_steps_opt {
                 if explicit_steps <= resumed.current_step {
-                    let _ = writeln!(
-                        err,
+                    return Err(CliError::usage(format!(
                         "'--steps' ({}) deve ser maior que o passo atual do checkpoint ({}).",
                         explicit_steps, resumed.current_step
-                    );
-                    return 2;
+                    )));
                 }
                 resumed.config.max_steps = explicit_steps;
             } else {
@@ -285,22 +259,15 @@ pub(crate) fn execute_train_neural(
         }
         (tokenizer, resumed)
     } else {
-        if let Err(msg) = check_no_existing_training_artifacts(&out_dir) {
-            let _ = writeln!(err, "{}", msg);
-            return 1;
-        }
+        check_no_existing_training_artifacts(&out_dir).map_err(CliError::runtime)?;
         let corpus_refs: Vec<&str> = split.train.iter().map(|s| s.as_str()).collect();
         let tokenizer =
             crate::neural::tokenizer::BpeTokenizer::train_from_corpus(&corpus_refs, vocab_size);
 
-        if let Err(e) = std::fs::create_dir_all(&out_dir) {
-            let _ = writeln!(err, "Falha ao criar '{}': {}", out_dir.display(), e);
-            return 1;
-        }
-        if let Err(e) = tokenizer.save(&tok_path) {
-            let _ = writeln!(err, "{}", e);
-            return 1;
-        }
+        std::fs::create_dir_all(&out_dir).map_err(|e| {
+            CliError::runtime(format!("Falha ao criar '{}': {}", out_dir.display(), e))
+        })?;
+        tokenizer.save(&tok_path).map_err(CliError::runtime)?;
 
         let cfg = crate::neural::TransformerConfig {
             vocab_size: tokenizer.vocab_size(),
@@ -310,13 +277,8 @@ pub(crate) fn execute_train_neural(
             n_layers,
             d_ff,
         };
-        let model = match crate::neural::ServerMindTransformer::new_random(cfg, 2026) {
-            Ok(m) => m,
-            Err(e) => {
-                let _ = writeln!(err, "{}", e);
-                return 1;
-            }
-        };
+        let model = crate::neural::ServerMindTransformer::new_random(cfg, 2026)
+            .map_err(CliError::runtime)?;
         let (warmup_s, eval_int, ckpt_int) = if max_duration_opt.is_some() {
             (10, 500, 1_000)
         } else {
@@ -505,73 +467,60 @@ pub(crate) fn execute_train_neural(
         )
     };
 
-    match run_res {
-        Ok(report) => {
-            if let Some(ref rec) = recorder {
-                let final_status = if report.cancelled {
-                    "Pausado pelo usuário (Ctrl+C, salvo)"
-                } else {
-                    "Concluído"
-                };
-                let _ = rec.write_markdown_summary(&report.active_device, final_status);
-                let _ = writeln!(
-                    out,
-                    "Sequência evolutiva completa salva em '{}' e '{}'",
-                    rec.md_path.display(),
-                    rec.jsonl_path.display()
-                );
-            }
-            let status_lbl = if report.cancelled {
-                "pausado com segurança (Ctrl+C)"
-            } else if report.stopped_by_duration {
-                "concluído no tempo programado"
-            } else {
-                "concluído"
-            };
-            let _ = writeln!(
-                out,
-                "Treinamento {} [{}]: steps={} | initial_loss={:.4} -> final_loss={:.4} | best_val_loss={:.4} | {:.1} tok/s | elapsed={}",
-                status_lbl,
-                report.active_device,
-                report.steps_completed,
-                report.initial_train_loss,
-                report.final_train_loss,
-                report.best_val_loss,
-                report.tokens_per_sec,
-                format_hms(Duration::from_millis(report.total_elapsed_ms as u64))
-            );
-            let _ = writeln!(out, "Artefatos salvos em '{}'", out_dir.display());
-            if let Some(ref qdir) = export_quant_dir {
-                match export_quantized_package(&out_dir, qdir, export_bits) {
-                    Ok(info) => {
-                        let _ = writeln!(
-                            out,
-                            "Pacote quantizado SMQ1 ({}) exportado para '{}': disco {:.2} MB -> {:.2} MB ({:.2}x menor) | pesos RAM {:.2} MB -> {:.2} MB",
-                            info.precision.as_str(),
-                            qdir.display(),
-                            info.src_disk_mb,
-                            info.dst_disk_mb,
-                            info.compression_ratio,
-                            info.src_ram_mb,
-                            info.dst_ram_mb
-                        );
-                    }
-                    Err(e) => {
-                        let _ = writeln!(err, "Erro ao exportar pacote quantizado: {}", e);
-                        return 1;
-                    }
-                }
-            }
-            if report.cancelled {
-                130
-            } else {
-                0
-            }
-        }
-        Err(e) => {
-            let _ = writeln!(err, "Erro no treinamento: {}", e);
-            1
-        }
+    let report = run_res.map_err(|e| CliError::runtime(format!("Erro no treinamento: {}", e)))?;
+    if let Some(ref rec) = recorder {
+        let final_status = if report.cancelled {
+            "Pausado pelo usuário (Ctrl+C, salvo)"
+        } else {
+            "Concluído"
+        };
+        let _ = rec.write_markdown_summary(&report.active_device, final_status);
+        let _ = writeln!(
+            out,
+            "Sequência evolutiva completa salva em '{}' e '{}'",
+            rec.md_path.display(),
+            rec.jsonl_path.display()
+        );
+    }
+    let status_lbl = if report.cancelled {
+        "pausado com segurança (Ctrl+C)"
+    } else if report.stopped_by_duration {
+        "concluído no tempo programado"
+    } else {
+        "concluído"
+    };
+    let _ = writeln!(
+        out,
+        "Treinamento {} [{}]: steps={} | initial_loss={:.4} -> final_loss={:.4} | best_val_loss={:.4} | {:.1} tok/s | elapsed={}",
+        status_lbl,
+        report.active_device,
+        report.steps_completed,
+        report.initial_train_loss,
+        report.final_train_loss,
+        report.best_val_loss,
+        report.tokens_per_sec,
+        format_hms(Duration::from_millis(report.total_elapsed_ms as u64))
+    );
+    let _ = writeln!(out, "Artefatos salvos em '{}'", out_dir.display());
+    if let Some(ref qdir) = export_quant_dir {
+        let info = export_quantized_package(&out_dir, qdir, export_bits)
+            .map_err(|e| CliError::runtime(format!("Erro ao exportar pacote quantizado: {}", e)))?;
+        let _ = writeln!(
+            out,
+            "Pacote quantizado SMQ1 ({}) exportado para '{}': disco {:.2} MB -> {:.2} MB ({:.2}x menor) | pesos RAM {:.2} MB -> {:.2} MB",
+            info.precision.as_str(),
+            qdir.display(),
+            info.src_disk_mb,
+            info.dst_disk_mb,
+            info.compression_ratio,
+            info.src_ram_mb,
+            info.dst_ram_mb
+        );
+    }
+    if report.cancelled {
+        Err(CliError::cancelled())
+    } else {
+        Ok(())
     }
 }
 
@@ -579,7 +528,7 @@ pub(crate) fn execute_eval_neural(
     req: EvalNeuralRequest,
     out: &mut dyn Write,
     err: &mut dyn Write,
-) -> i32 {
+) -> CliResult<()> {
     let ckpt_dir = req.ckpt_dir_opt.unwrap_or_else(|| {
         crate::chat::config::AppConfig::resolve_from_config_dir("checkpoints/servermind-neural-v1")
     });
@@ -610,39 +559,25 @@ pub(crate) fn execute_eval_neural(
 
     let eval_target_dir = if let Some(ref qdir) = quantize_out {
         let prec = bits_opt.unwrap_or(crate::neural::WeightPrecision::Int8);
-        match export_quantized_package(&ckpt_dir, qdir, prec) {
-            Ok(st) => {
-                let _ = writeln!(
-                    err,
-                    "[SMQ1 exportado | bits={} | disco {:.2} MB -> {:.2} MB ({:.2}x) | RAM pesos {:.2} MB -> {:.2} MB]",
-                    st.precision.as_str(),
-                    st.src_disk_mb,
-                    st.dst_disk_mb,
-                    st.compression_ratio,
-                    st.src_ram_mb,
-                    st.dst_ram_mb
-                );
-            }
-            Err(e) => {
-                let _ = writeln!(err, "{}", e);
-                return 1;
-            }
-        }
+        let st = export_quantized_package(&ckpt_dir, qdir, prec).map_err(CliError::runtime)?;
+        let _ = writeln!(
+            err,
+            "[SMQ1 exportado | bits={} | disco {:.2} MB -> {:.2} MB ({:.2}x) | RAM pesos {:.2} MB -> {:.2} MB]",
+            st.precision.as_str(),
+            st.src_disk_mb,
+            st.dst_disk_mb,
+            st.compression_ratio,
+            st.src_ram_mb,
+            st.dst_ram_mb
+        );
         qdir.clone()
     } else {
         ckpt_dir
     };
 
-    let mut engine = match crate::neural::inference::NeuralEngine::load_from_dir_with_budget(
-        &eval_target_dir,
-        budget,
-    ) {
-        Ok(e) => e,
-        Err(e) => {
-            let _ = writeln!(err, "{}", e);
-            return 1;
-        }
-    };
+    let mut engine =
+        crate::neural::inference::NeuralEngine::load_from_dir_with_budget(&eval_target_dir, budget)
+            .map_err(CliError::runtime)?;
     if let Some(kv) = kv_cache_opt {
         engine = engine.with_kv_precision(kv);
     }
@@ -650,32 +585,17 @@ pub(crate) fn execute_eval_neural(
     if quantize_out.is_none() {
         if let Some(prec) = bits_opt {
             if !engine.model.is_quantized() {
-                match crate::neural::quantize_model_in_memory(&engine.model, prec) {
-                    Ok(qm) => engine.model = qm,
-                    Err(e) => {
-                        let _ = writeln!(err, "{}", e);
-                        return 1;
-                    }
-                }
+                engine.model = crate::neural::quantize_model_in_memory(&engine.model, prec)
+                    .map_err(CliError::runtime)?;
             }
         }
     }
 
-    let val_texts = match load_seed_corpus(&dataset_path) {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = writeln!(err, "{}", e);
-            return 1;
-        }
-    };
+    let val_texts = load_seed_corpus(&dataset_path).map_err(CliError::runtime)?;
     let summary = crate::eval::neural_eval::evaluate_neural_engine(&engine, &val_texts);
-    let mut json_val = match serde_json::to_value(&summary) {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = writeln!(err, "Falha ao serializar resumo de avaliação: {}", e);
-            return 1;
-        }
-    };
+    let mut json_val = serde_json::to_value(&summary).map_err(|e| {
+        CliError::runtime(format!("Falha ao serializar resumo de avaliação: {}", e))
+    })?;
     if let Some(obj) = json_val.as_object_mut() {
         obj.insert(
             "runtime_profile".to_string(),
@@ -707,13 +627,8 @@ pub(crate) fn execute_eval_neural(
             ),
         );
     }
-    let json = match serde_json::to_string_pretty(&json_val) {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = writeln!(err, "Falha ao formatar JSON de avaliação: {}", e);
-            return 1;
-        }
-    };
+    let json = serde_json::to_string_pretty(&json_val)
+        .map_err(|e| CliError::runtime(format!("Falha ao formatar JSON de avaliação: {}", e)))?;
     let _ = writeln!(out, "{}", json);
-    0
+    Ok(())
 }

@@ -1,5 +1,6 @@
 use crate::chat::config::AppConfig;
 use crate::chat::ollama::{InstalledModelInfo, OllamaClient};
+use crate::cli::error::{CliError, CliResult};
 use crate::eval::dataset::{filter_cases, load_and_validate_dataset, DatasetFilter, EvalCategory};
 use crate::eval::report::CaseExecutionStatus;
 use crate::eval::runner::{
@@ -13,8 +14,51 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub fn run_eval_cli_result<W: Write>(
+    args: &[String],
+    install_ctrlc_handler: bool,
+    cancel_flag: Option<Arc<AtomicBool>>,
+    out: &mut W,
+) -> CliResult<()> {
+    if args.is_empty() {
+        return Err(CliError::usage(
+            "[ERRO DE USO]\nSubcomando de avaliação ausente.\nPróxima ação: execute `servermind-ai eval --help` para ver os subcomandos disponíveis (list-cases, list-models, run).",
+        ));
+    }
+
+    match args[0].as_str() {
+        "--help" | "-h" | "help" => {
+            if args.len() > 1 {
+                return Err(CliError::usage(format!(
+                    "[ERRO DE USO]\nArgumento inesperado '{}' após '{}'.\nPróxima ação: execute `servermind-ai eval --help`.",
+                    args[1], args[0]
+                )));
+            }
+            print_eval_help(out);
+            Ok(())
+        }
+        "list-cases" => run_eval_list_cases(&args[1..], out),
+        "list-models" => run_eval_list_models(&args[1..], out),
+        "run" => run_eval_run(&args[1..], install_ctrlc_handler, cancel_flag, out),
+        other => {
+            if other.starts_with('-') {
+                Err(CliError::usage(format!(
+                    "[OPÇÃO DESCONHECIDA]\nA opção '{}' não é reconhecida antes de um subcomando de avaliação.\nPróxima ação: execute `servermind-ai eval --help`.",
+                    other
+                )))
+            } else {
+                Err(CliError::usage(format!(
+                    "[SUBCOMANDO DESCONHECIDO]\nO subcomando 'eval {}' não existe.\nPróxima ação: use `list-cases`, `list-models` ou `run` (veja `servermind-ai eval --help`).",
+                    other
+                )))
+            }
+        }
+    }
+}
+
 /// Ponto de entrada testável para subcomandos `eval`, permitindo capturar `stdout`/`stderr`,
 /// desabilitar handler global de `Ctrl+C` em testes paralelos e injetar `cancel_flag`.
+#[cfg(test)]
 pub fn run_eval_cli_with_options<W1: Write, W2: Write>(
     args: &[String],
     install_ctrlc_handler: bool,
@@ -22,46 +66,9 @@ pub fn run_eval_cli_with_options<W1: Write, W2: Write>(
     out: &mut W1,
     err: &mut W2,
 ) -> i32 {
-    if args.is_empty() {
-        let _ = writeln!(
-            err,
-            "[ERRO DE USO]\nSubcomando de avaliação ausente.\nPróxima ação: execute `servermind-ai eval --help` para ver os subcomandos disponíveis (list-cases, list-models, run)."
-        );
-        return 2;
-    }
-
-    match args[0].as_str() {
-        "--help" | "-h" | "help" => {
-            if args.len() > 1 {
-                let _ = writeln!(
-                    err,
-                    "[ERRO DE USO]\nArgumento inesperado '{}' após '{}'.\nPróxima ação: execute `servermind-ai eval --help`.",
-                    args[1], args[0]
-                );
-                return 2;
-            }
-            print_eval_help(out);
-            0
-        }
-        "list-cases" => run_eval_list_cases(&args[1..], out, err),
-        "list-models" => run_eval_list_models(&args[1..], out, err),
-        "run" => run_eval_run(&args[1..], install_ctrlc_handler, cancel_flag, out, err),
-        other => {
-            if other.starts_with('-') {
-                let _ = writeln!(
-                    err,
-                    "[OPÇÃO DESCONHECIDA]\nA opção '{}' não é reconhecida antes de um subcomando de avaliação.\nPróxima ação: execute `servermind-ai eval --help`.",
-                    other
-                );
-            } else {
-                let _ = writeln!(
-                    err,
-                    "[SUBCOMANDO DESCONHECIDO]\nO subcomando 'eval {}' não existe.\nPróxima ação: use `list-cases`, `list-models` ou `run` (veja `servermind-ai eval --help`).",
-                    other
-                );
-            }
-            2
-        }
+    match run_eval_cli_result(args, install_ctrlc_handler, cancel_flag, out) {
+        Ok(()) => 0,
+        Err(e) => e.emit_and_code(err),
     }
 }
 
@@ -153,28 +160,18 @@ fn print_eval_help<W: Write>(out: &mut W) {
     );
 }
 
-fn run_eval_list_cases<W1: Write, W2: Write>(args: &[String], out: &mut W1, err: &mut W2) -> i32 {
-    let parsed = match parse_list_cases_args(args) {
-        Ok(p) => p,
-        Err(msg) => {
-            let _ = writeln!(err, "[ERRO DE ARGUMENTOS]\n{}", msg);
-            return 2;
-        }
-    };
+fn run_eval_list_cases<W: Write>(args: &[String], out: &mut W) -> CliResult<()> {
+    let parsed = parse_list_cases_args(args)
+        .map_err(|msg| CliError::usage(format!("[ERRO DE ARGUMENTOS]\n{}", msg)))?;
 
     if parsed.help_requested {
         print_eval_help(out);
-        return 0;
+        return Ok(());
     }
 
     let dataset_path = parsed.dataset.unwrap_or_else(default_dataset_path);
-    let loaded = match load_and_validate_dataset(&dataset_path) {
-        Ok(ds) => ds,
-        Err(msg) => {
-            let _ = writeln!(err, "[ERRO AO CARREGAR DATASET]\n{}", msg);
-            return 1;
-        }
-    };
+    let loaded = load_and_validate_dataset(&dataset_path)
+        .map_err(|msg| CliError::runtime(format!("[ERRO AO CARREGAR DATASET]\n{}", msg)))?;
 
     let filter = DatasetFilter {
         categories: parsed.categories,
@@ -182,13 +179,8 @@ fn run_eval_list_cases<W1: Write, W2: Write>(args: &[String], out: &mut W1, err:
         limit: None,
     };
 
-    let selected = match filter_cases(&loaded.dataset, &filter) {
-        Ok(list) => list,
-        Err(msg) => {
-            let _ = writeln!(err, "[ERRO DE FILTRO]\n{}", msg);
-            return 1;
-        }
-    };
+    let selected = filter_cases(&loaded.dataset, &filter)
+        .map_err(|msg| CliError::runtime(format!("[ERRO DE FILTRO]\n{}", msg)))?;
 
     let _ = writeln!(
         out,
@@ -220,47 +212,28 @@ fn run_eval_list_cases<W1: Write, W2: Write>(args: &[String], out: &mut W1, err:
         );
     }
 
-    0
+    Ok(())
 }
 
-fn run_eval_list_models<W1: Write, W2: Write>(args: &[String], out: &mut W1, err: &mut W2) -> i32 {
-    let parsed = match parse_list_models_args(args) {
-        Ok(p) => p,
-        Err(msg) => {
-            let _ = writeln!(err, "[ERRO DE ARGUMENTOS]\n{}", msg);
-            return 2;
-        }
-    };
+fn run_eval_list_models<W: Write>(args: &[String], out: &mut W) -> CliResult<()> {
+    let parsed = parse_list_models_args(args)
+        .map_err(|msg| CliError::usage(format!("[ERRO DE ARGUMENTOS]\n{}", msg)))?;
 
     if parsed.help_requested {
         print_eval_help(out);
-        return 0;
+        return Ok(());
     }
 
     let (ollama_url, timeout_secs, _) =
-        match resolve_eval_connection(parsed.ollama_url, parsed.timeout_secs, None, false) {
-            Ok(cfg) => cfg,
-            Err(msg) => {
-                let _ = writeln!(err, "[ERRO DE CONFIGURAÇÃO]\n{}", msg);
-                return 1;
-            }
-        };
+        resolve_eval_connection(parsed.ollama_url, parsed.timeout_secs, None, false)
+            .map_err(|msg| CliError::runtime(format!("[ERRO DE CONFIGURAÇÃO]\n{}", msg)))?;
 
-    let client = match build_eval_client(&ollama_url, timeout_secs) {
-        Ok(c) => c,
-        Err(msg) => {
-            let _ = writeln!(err, "[ERRO DE CLIENTE OLLAMA]\n{}", msg);
-            return 1;
-        }
-    };
+    let client = build_eval_client(&ollama_url, timeout_secs)
+        .map_err(|msg| CliError::runtime(format!("[ERRO DE CLIENTE OLLAMA]\n{}", msg)))?;
 
-    let models = match client.list_installed_model_details() {
-        Ok(list) => list,
-        Err(msg) => {
-            let _ = writeln!(err, "[OLLAMA INDISPONÍVEL]\n{}", msg);
-            return 1;
-        }
-    };
+    let models = client
+        .list_installed_model_details()
+        .map_err(|msg| CliError::runtime(format!("[OLLAMA INDISPONÍVEL]\n{}", msg)))?;
 
     let _ = writeln!(out, "Ollama local: {}", client.base_url());
     if models.is_empty() {
@@ -268,7 +241,7 @@ fn run_eval_list_models<W1: Write, W2: Write>(args: &[String], out: &mut W1, err
             out,
             "Nenhum modelo instalado localmente. O ServerMind não baixa modelos automaticamente; execute `ollama pull llama3.2` em outro terminal."
         );
-        return 0;
+        return Ok(());
     }
 
     let _ = writeln!(out, "Modelos instalados ({}):", models.len());
@@ -281,27 +254,21 @@ fn run_eval_list_models<W1: Write, W2: Write>(args: &[String], out: &mut W1, err
         }
     }
 
-    0
+    Ok(())
 }
 
-fn run_eval_run<W1: Write, W2: Write>(
+fn run_eval_run<W: Write>(
     args: &[String],
     install_ctrlc_handler: bool,
     cancel_flag: Option<Arc<AtomicBool>>,
-    out: &mut W1,
-    err: &mut W2,
-) -> i32 {
-    let parsed = match parse_eval_run_args(args) {
-        Ok(p) => p,
-        Err(msg) => {
-            let _ = writeln!(err, "[ERRO DE ARGUMENTOS]\n{}", msg);
-            return 2;
-        }
-    };
+    out: &mut W,
+) -> CliResult<()> {
+    let parsed = parse_eval_run_args(args)
+        .map_err(|msg| CliError::usage(format!("[ERRO DE ARGUMENTOS]\n{}", msg)))?;
 
     if parsed.help_requested {
         print_eval_help(out);
-        return 0;
+        return Ok(());
     }
 
     let backend_kind = parsed
@@ -334,35 +301,16 @@ fn run_eval_run<W1: Write, W2: Write>(
 
     let outcome = match backend_kind {
         crate::chat::backend::BackendKind::Ollama => {
-            let (ollama_url, timeout_secs, model) = match resolve_eval_connection(
-                parsed.ollama_url,
-                parsed.timeout_secs,
-                parsed.model,
-                true,
-            ) {
-                Ok(cfg) => cfg,
-                Err(msg) => {
-                    let _ = writeln!(err, "[ERRO DE CONFIGURAÇÃO]\n{}", msg);
-                    return 1;
-                }
-            };
-            let client = match build_eval_client(&ollama_url, timeout_secs) {
-                Ok(c) => c,
-                Err(msg) => {
-                    let _ = writeln!(err, "[ERRO DE CLIENTE OLLAMA]\n{}", msg);
-                    return 1;
-                }
-            };
+            let (ollama_url, timeout_secs, model) =
+                resolve_eval_connection(parsed.ollama_url, parsed.timeout_secs, parsed.model, true)
+                    .map_err(|msg| CliError::runtime(format!("[ERRO DE CONFIGURAÇÃO]\n{}", msg)))?;
+            let client = build_eval_client(&ollama_url, timeout_secs)
+                .map_err(|msg| CliError::runtime(format!("[ERRO DE CLIENTE OLLAMA]\n{}", msg)))?;
             let run_config = build_common_run_config(model, timeout_secs);
-            match run_evaluation_with_progress(&client, &run_config, |event| {
+            run_evaluation_with_progress(&client, &run_config, |event| {
                 print_progress_event(out, event);
-            }) {
-                Ok(res) => res,
-                Err(msg) => {
-                    let _ = writeln!(err, "[ERRO NA AVALIAÇÃO]\n{}", msg);
-                    return 1;
-                }
-            }
+            })
+            .map_err(|msg| CliError::runtime(format!("[ERRO NA AVALIAÇÃO]\n{}", msg)))?
         }
         crate::chat::backend::BackendKind::Neural => {
             let base_dir = AppConfig::resolve_active_config_dir();
@@ -378,47 +326,27 @@ fn run_eval_run<W1: Write, W2: Write>(
                     }
                 })
                 .unwrap_or_else(|| super::repl::resolve_default_neural_checkpoint_dir(&base_dir));
-            let nb = match crate::chat::backend::NeuralBackend::load_from_dir(&ckpt_dir) {
-                Ok(b) => b,
-                Err(msg) => {
-                    let _ = writeln!(err, "[ERRO AO CARREGAR BACKEND NEURAL]\n{}", msg);
-                    return 1;
-                }
-            };
+            let nb =
+                crate::chat::backend::NeuralBackend::load_from_dir(&ckpt_dir).map_err(|msg| {
+                    CliError::runtime(format!("[ERRO AO CARREGAR BACKEND NEURAL]\n{}", msg))
+                })?;
             let timeout_secs = parsed.timeout_secs.unwrap_or(120);
             let run_config = build_common_run_config(nb.model_label(), timeout_secs);
-            match run_evaluation_with_progress(&nb, &run_config, |event| {
+            run_evaluation_with_progress(&nb, &run_config, |event| {
                 print_progress_event(out, event);
-            }) {
-                Ok(res) => res,
-                Err(msg) => {
-                    let _ = writeln!(err, "[ERRO NA AVALIAÇÃO]\n{}", msg);
-                    return 1;
-                }
-            }
+            })
+            .map_err(|msg| CliError::runtime(format!("[ERRO NA AVALIAÇÃO]\n{}", msg)))?
         }
         crate::chat::backend::BackendKind::Claude => {
             let timeout_secs = parsed
                 .timeout_secs
                 .unwrap_or(crate::chat::backend::DEFAULT_REMOTE_TIMEOUT_SECS);
-            let limits =
-                match crate::chat::backend::RemoteLimits::from_env_with_timeout(timeout_secs) {
-                    Ok(l) => l,
-                    Err(msg) => {
-                        let _ = writeln!(err, "[ERRO DE CONFIGURAÇÃO REMOTA]\n{}", msg);
-                        return 1;
-                    }
-                };
-            let cb = match crate::chat::backend::ClaudeBackend::from_env(
-                parsed.model.as_deref(),
-                limits,
-            ) {
-                Ok(b) => b,
-                Err(msg) => {
-                    let _ = writeln!(err, "[ERRO DE BACKEND CLAUDE]\n{}", msg);
-                    return 1;
-                }
-            };
+            let limits = crate::chat::backend::RemoteLimits::from_env_with_timeout(timeout_secs)
+                .map_err(|msg| {
+                    CliError::runtime(format!("[ERRO DE CONFIGURAÇÃO REMOTA]\n{}", msg))
+                })?;
+            let cb = crate::chat::backend::ClaudeBackend::from_env(parsed.model.as_deref(), limits)
+                .map_err(|msg| CliError::runtime(format!("[ERRO DE BACKEND CLAUDE]\n{}", msg)))?;
             let _ = writeln!(
                 out,
                 "{}",
@@ -430,15 +358,10 @@ fn run_eval_run<W1: Write, W2: Write>(
                 )
             );
             let run_config = build_common_run_config(cb.default_model().to_string(), timeout_secs);
-            match run_evaluation_with_progress(&cb, &run_config, |event| {
+            run_evaluation_with_progress(&cb, &run_config, |event| {
                 print_progress_event(out, event);
-            }) {
-                Ok(res) => res,
-                Err(msg) => {
-                    let _ = writeln!(err, "[ERRO NA AVALIAÇÃO]\n{}", msg);
-                    return 1;
-                }
-            }
+            })
+            .map_err(|msg| CliError::runtime(format!("[ERRO NA AVALIAÇÃO]\n{}", msg)))?
         }
         remote_kind => {
             let (preset, preset_model) = remote_kind
@@ -447,26 +370,17 @@ fn run_eval_run<W1: Write, W2: Write>(
             let timeout_secs = parsed
                 .timeout_secs
                 .unwrap_or(crate::chat::backend::DEFAULT_REMOTE_TIMEOUT_SECS);
-            let limits =
-                match crate::chat::backend::RemoteLimits::from_env_with_timeout(timeout_secs) {
-                    Ok(l) => l,
-                    Err(msg) => {
-                        let _ = writeln!(err, "[ERRO DE CONFIGURAÇÃO REMOTA]\n{}", msg);
-                        return 1;
-                    }
-                };
+            let limits = crate::chat::backend::RemoteLimits::from_env_with_timeout(timeout_secs)
+                .map_err(|msg| {
+                    CliError::runtime(format!("[ERRO DE CONFIGURAÇÃO REMOTA]\n{}", msg))
+                })?;
             let effective_model = parsed.model.as_deref().or(preset_model);
-            let ob = match crate::chat::backend::OpenAiCompatBackend::from_env(
+            let ob = crate::chat::backend::OpenAiCompatBackend::from_env(
                 preset,
                 effective_model,
                 limits,
-            ) {
-                Ok(b) => b,
-                Err(msg) => {
-                    let _ = writeln!(err, "[ERRO DE BACKEND REMOTO]\n{}", msg);
-                    return 1;
-                }
-            };
+            )
+            .map_err(|msg| CliError::runtime(format!("[ERRO DE BACKEND REMOTO]\n{}", msg)))?;
             let _ = writeln!(
                 out,
                 "{}",
@@ -478,15 +392,10 @@ fn run_eval_run<W1: Write, W2: Write>(
                 )
             );
             let run_config = build_common_run_config(ob.default_model().to_string(), timeout_secs);
-            match run_evaluation_with_progress(&ob, &run_config, |event| {
+            run_evaluation_with_progress(&ob, &run_config, |event| {
                 print_progress_event(out, event);
-            }) {
-                Ok(res) => res,
-                Err(msg) => {
-                    let _ = writeln!(err, "[ERRO NA AVALIAÇÃO]\n{}", msg);
-                    return 1;
-                }
-            }
+            })
+            .map_err(|msg| CliError::runtime(format!("[ERRO NA AVALIAÇÃO]\n{}", msg)))?
         }
     };
 
@@ -494,23 +403,19 @@ fn run_eval_run<W1: Write, W2: Write>(
 
     let stats = &outcome.report.execution_stats;
     if stats.cancelled {
-        let _ = writeln!(
-            err,
-            "[AVALIAÇÃO CANCELADA]\nExecução interrompida por solicitação do usuário (Ctrl+C). Relatório parcial consistente salvo."
-        );
-        return 130;
+        return Err(CliError::cancelled_with_message(
+            "[AVALIAÇÃO CANCELADA]\nExecução interrompida por solicitação do usuário (Ctrl+C). Relatório parcial consistente salvo.",
+        ));
     }
 
     if stats.global_failure_detected {
         let reason = stats.early_abort_reason.as_deref().unwrap_or(
             "todas as execuções planejadas falharam, expiraram ou retornaram respostas vazias",
         );
-        let _ = writeln!(
-            err,
+        return Err(CliError::runtime(format!(
             "[FALHA GLOBAL DETECTADA]\nCausa: {}\nPróxima ação: verifique o serviço Ollama local, os logs do modelo e os relatórios parciais gerados acima.",
             reason
-        );
-        return 1;
+        )));
     }
 
     if stats.max_duration_reached {
@@ -521,7 +426,7 @@ fn run_eval_run<W1: Write, W2: Write>(
         );
     }
 
-    0
+    Ok(())
 }
 
 struct ParsedListCasesArgs {

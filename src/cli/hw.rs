@@ -1,10 +1,11 @@
+use crate::cli::error::CliResult;
 use std::io::Write;
 
 pub(super) fn handle_hw_command(out: &mut dyn Write) {
     let _ = run_hw_cli(out);
 }
 
-pub fn run_hw_cli(out: &mut dyn Write) -> i32 {
+pub fn run_hw_cli(out: &mut dyn Write) -> CliResult<()> {
     let hw = crate::platform::hardware::probe_hardware();
     let (ms, gflops) = crate::platform::hardware::benchmark_cpu_matmul(192);
     let mem_10m = crate::platform::hardware::estimate_transformer_memory_with_heads(
@@ -58,5 +59,5 @@ pub fn run_hw_cli(out: &mut dyn Write) -> i32 {
         mem_10m.fits_8gb_ram_inference,
         mem_10m.fits_8gb_vram_rx7600
     );
-    0
+    Ok(())
 }

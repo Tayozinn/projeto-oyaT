@@ -1,17 +1,21 @@
+pub(crate) mod error;
 pub(crate) mod eval;
 pub(crate) mod hw;
 pub(crate) mod quantize;
 pub(crate) mod repl;
 pub(crate) mod train;
 
-pub(crate) use eval::run_eval_cli_with_options;
+pub use error::{CliError, CliResult};
+pub(crate) use eval::run_eval_cli_result;
 pub(crate) use hw::run_hw_cli;
 pub(crate) use repl::run_terminal_loop;
 #[cfg(test)]
 pub(crate) use repl::{
     handle_exp_command_with_io, is_repl_command_input, ParagraphStreamBuffer, SpinnerHandle,
 };
-pub(crate) use train::{run_eval_neural_cli, run_train_neural_cli_with_cancel};
+#[cfg(test)]
+pub(crate) use train::run_train_neural_cli_with_cancel;
+pub(crate) use train::{run_eval_neural_cli_result, run_train_neural_cli_result};
 
 use std::io::Write;
 

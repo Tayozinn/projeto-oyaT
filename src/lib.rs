@@ -11,6 +11,7 @@ use chat::agent::AgentSession;
 use chat::config::AppConfig;
 use chat::ollama::OllamaClient;
 use chat::storage::Storage;
+pub use cli::{CliError, CliResult};
 use std::io::{self, Write};
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
@@ -20,6 +21,60 @@ pub fn exit_code_from_i32(code: i32) -> ExitCode {
     ExitCode::from(code.clamp(0, 255) as u8)
 }
 
+/// Despacha subcomandos de linha de comando retornando [`CliResult`] tipado (`B11` — Fase 4).
+/// Retorna `Ok(false)` quando nenhum subcomando foi passado (modo chat interativo).
+pub fn dispatch_cli_result_with_io<W1: Write, W2: Write>(
+    args: &[String],
+    install_ctrlc_handler: bool,
+    cancel_flag: Option<Arc<AtomicBool>>,
+    out: &mut W1,
+    err: &mut W2,
+) -> CliResult<bool> {
+    if args.len() <= 1 {
+        return Ok(false);
+    }
+
+    match args[1].as_str() {
+        "eval" => {
+            cli::run_eval_cli_result(&args[2..], install_ctrlc_handler, cancel_flag, out)?;
+            Ok(true)
+        }
+        "train-neural" => {
+            cli::run_train_neural_cli_result(
+                &args[2..],
+                install_ctrlc_handler,
+                cancel_flag,
+                out,
+                err,
+            )?;
+            Ok(true)
+        }
+        "eval-neural" => {
+            cli::run_eval_neural_cli_result(&args[2..], out, err)?;
+            Ok(true)
+        }
+        "hw" => {
+            cli::run_hw_cli(out)?;
+            Ok(true)
+        }
+        "--help" | "-h" => {
+            if args.len() > 2 {
+                Err(CliError::usage(format!(
+                    "[ERRO DE USO]\nArgumento inesperado '{}' após '{}'.\nPróxima ação: execute `servermind-ai --help` ou `servermind-ai eval --help`.",
+                    args[2], args[1]
+                )))
+            } else {
+                cli::print_top_level_usage(out);
+                Ok(true)
+            }
+        }
+        other => Err(CliError::usage(format!(
+            "[ERRO DE USO]\nSubcomando ou opção desconhecida: '{}'.\nPróxima ação: execute sem argumentos para abrir o chat interativo, ou use `servermind-ai eval --help`.",
+            other
+        ))),
+    }
+}
+
 pub fn dispatch_cli_args_with_io<W1: Write, W2: Write>(
     args: &[String],
     install_ctrlc_handler: bool,
@@ -27,88 +82,59 @@ pub fn dispatch_cli_args_with_io<W1: Write, W2: Write>(
     out: &mut W1,
     err: &mut W2,
 ) -> Option<i32> {
-    if args.len() <= 1 {
-        return None;
-    }
-
-    match args[1].as_str() {
-        "eval" => Some(cli::run_eval_cli_with_options(
-            &args[2..],
-            install_ctrlc_handler,
-            cancel_flag,
-            out,
-            err,
-        )),
-        "train-neural" => Some(cli::run_train_neural_cli_with_cancel(
-            &args[2..],
-            install_ctrlc_handler,
-            cancel_flag,
-            out,
-            err,
-        )),
-        "eval-neural" => Some(cli::run_eval_neural_cli(&args[2..], out, err)),
-        "hw" => Some(cli::run_hw_cli(out)),
-        "--help" | "-h" => {
-            if args.len() > 2 {
-                let _ = writeln!(
-                    err,
-                    "[ERRO DE USO]\nArgumento inesperado '{}' após '{}'.\nPróxima ação: execute `servermind-ai --help` ou `servermind-ai eval --help`.",
-                    args[2], args[1]
-                );
-                Some(2)
-            } else {
-                cli::print_top_level_usage(out);
-                Some(0)
-            }
-        }
-        other => {
-            let _ = writeln!(
-                err,
-                "[ERRO DE USO]\nSubcomando ou opção desconhecida: '{}'.\nPróxima ação: execute sem argumentos para abrir o chat interativo, ou use `servermind-ai eval --help`.",
-                other
-            );
-            Some(2)
-        }
+    match dispatch_cli_result_with_io(args, install_ctrlc_handler, cancel_flag, out, err) {
+        Ok(false) => None,
+        Ok(true) => Some(0),
+        Err(cli_err) => Some(cli_err.emit_and_code(err)),
     }
 }
 
 pub fn run_from_env() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    if let Some(exit_code) =
-        dispatch_cli_args_with_io(&args, true, None, &mut io::stdout(), &mut io::stderr())
-    {
-        return exit_code_from_i32(exit_code);
+    let mut stdout = io::stdout();
+    let mut stderr = io::stderr();
+    match dispatch_cli_result_with_io(&args, true, None, &mut stdout, &mut stderr) {
+        Ok(true) => return ExitCode::SUCCESS,
+        Err(cli_err) => {
+            let _ = cli_err.emit_and_code(&mut stderr);
+            return cli_err.to_exit_code();
+        }
+        Ok(false) => {}
     }
 
     let config = match AppConfig::load() {
         Ok(cfg) => cfg,
         Err(err) => {
-            eprintln!("[ERRO DE CONFIGURAÇÃO]\n{}", err);
-            return ExitCode::from(1);
+            let cli_err = CliError::runtime(format!("[ERRO DE CONFIGURAÇÃO]\n{}", err));
+            let _ = cli_err.emit_and_code(&mut stderr);
+            return cli_err.to_exit_code();
         }
     };
 
     let storage = match Storage::new(&config.database_path) {
         Ok(db) => db,
         Err(err) => {
-            eprintln!("[ERRO DE BANCO DE DADOS SQLITE]\n{}", err);
-            return ExitCode::from(1);
+            let cli_err = CliError::runtime(format!("[ERRO DE BANCO DE DADOS SQLITE]\n{}", err));
+            let _ = cli_err.emit_and_code(&mut stderr);
+            return cli_err.to_exit_code();
         }
     };
 
     let ollama = match OllamaClient::new(config.ollama_url.clone(), config.request_timeout_secs) {
         Ok(client) => client,
         Err(err) => {
-            eprintln!("[ERRO DE CLIENTE OLLAMA]\n{}", err);
-            return ExitCode::from(1);
+            let cli_err = CliError::runtime(format!("[ERRO DE CLIENTE OLLAMA]\n{}", err));
+            let _ = cli_err.emit_and_code(&mut stderr);
+            return cli_err.to_exit_code();
         }
     };
 
     let mut session = match AgentSession::new(config, storage, ollama) {
         Ok(sess) => sess,
         Err(err) => {
-            eprintln!("[ERRO AO INICIAR SESSÃO]\n{}", err);
-            return ExitCode::from(1);
+            let cli_err = CliError::runtime(format!("[ERRO AO INICIAR SESSÃO]\n{}", err));
+            let _ = cli_err.emit_and_code(&mut stderr);
+            return cli_err.to_exit_code();
         }
     };
 
