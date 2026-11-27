@@ -1,3 +1,4 @@
+pub(crate) mod app;
 pub(crate) mod chat;
 pub(crate) mod cli;
 pub(crate) mod eval;

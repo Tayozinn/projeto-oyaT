@@ -1,6 +1,5 @@
 pub(crate) mod eval;
 pub(crate) mod hw;
-pub(crate) mod marathon;
 pub(crate) mod quantize;
 pub(crate) mod repl;
 pub(crate) mod train;

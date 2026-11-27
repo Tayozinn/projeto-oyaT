@@ -1,12 +1,12 @@
+use super::corpus::{check_no_existing_training_artifacts, load_seed_corpus};
 use super::quantize::export_quantized_package;
-use super::train::{check_no_existing_training_artifacts, load_seed_corpus};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub(super) fn format_hms(d: Duration) -> String {
+pub(crate) fn format_hms(d: Duration) -> String {
     let total = d.as_secs();
     let h = total / 3600;
     let m = (total % 3600) / 60;
@@ -37,7 +37,7 @@ struct EvolutionMilestoneEntry {
     samples: Vec<ProbeOutputSample>,
 }
 
-pub(super) struct EvolutionSequenceRecorder {
+pub(crate) struct EvolutionSequenceRecorder {
     run_name: String,
     device_hint: String,
     total_params: usize,
@@ -48,7 +48,7 @@ pub(super) struct EvolutionSequenceRecorder {
 }
 
 impl EvolutionSequenceRecorder {
-    pub(super) fn new(
+    pub(crate) fn new(
         out_dir: &std::path::Path,
         run_name: &str,
         device_hint: &str,
@@ -151,7 +151,7 @@ impl EvolutionSequenceRecorder {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn record_milestone(
+    pub(crate) fn record_milestone(
         &mut self,
         phase: &str,
         model: &crate::neural::ServerMindTransformer,
@@ -248,7 +248,7 @@ impl EvolutionSequenceRecorder {
         let _ = self.write_markdown_summary(&self.device_hint, "Em andamento");
     }
 
-    pub(super) fn write_markdown_summary(
+    pub(crate) fn write_markdown_summary(
         &self,
         active_device: &str,
         status_label: &str,
@@ -326,28 +326,28 @@ impl EvolutionSequenceRecorder {
     }
 }
 
-pub(super) struct MarathonParams {
-    pub(super) out_dir: PathBuf,
-    pub(super) quant_out_dir: PathBuf,
-    pub(super) export_bits: crate::neural::WeightPrecision,
-    pub(super) total_duration: Duration,
-    pub(super) eval_every_secs: Option<u64>,
-    pub(super) dataset_override: Option<PathBuf>,
-    pub(super) corpus_dirs_override: Vec<PathBuf>,
-    pub(super) chunk_chars: usize,
-    pub(super) resume: bool,
-    pub(super) d_model: usize,
-    pub(super) n_heads: usize,
-    pub(super) n_layers: usize,
-    pub(super) d_ff: usize,
-    pub(super) seq_len: usize,
-    pub(super) batch_size: usize,
-    pub(super) vocab_size: usize,
-    pub(super) lr_override: Option<f32>,
-    pub(super) max_val_windows: usize,
-    pub(super) device: crate::neural::ComputeDevice,
-    pub(super) install_ctrlc_handler: bool,
-    pub(super) cancel_flag: Option<Arc<AtomicBool>>,
+pub(crate) struct MarathonParams {
+    pub(crate) out_dir: PathBuf,
+    pub(crate) quant_out_dir: PathBuf,
+    pub(crate) export_bits: crate::neural::WeightPrecision,
+    pub(crate) total_duration: Duration,
+    pub(crate) eval_every_secs: Option<u64>,
+    pub(crate) dataset_override: Option<PathBuf>,
+    pub(crate) corpus_dirs_override: Vec<PathBuf>,
+    pub(crate) chunk_chars: usize,
+    pub(crate) resume: bool,
+    pub(crate) d_model: usize,
+    pub(crate) n_heads: usize,
+    pub(crate) n_layers: usize,
+    pub(crate) d_ff: usize,
+    pub(crate) seq_len: usize,
+    pub(crate) batch_size: usize,
+    pub(crate) vocab_size: usize,
+    pub(crate) lr_override: Option<f32>,
+    pub(crate) max_val_windows: usize,
+    pub(crate) device: crate::neural::ComputeDevice,
+    pub(crate) install_ctrlc_handler: bool,
+    pub(crate) cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 fn load_qa_datasets_combined(explicit_ds: Option<&PathBuf>) -> Result<Vec<String>, String> {
@@ -378,7 +378,7 @@ fn load_qa_datasets_combined(explicit_ds: Option<&PathBuf>) -> Result<Vec<String
     Ok(qa)
 }
 
-pub(super) fn run_autonomous_marathon(
+pub(crate) fn run_autonomous_marathon(
     params: MarathonParams,
     out: &mut dyn Write,
     err: &mut dyn Write,
@@ -414,8 +414,6 @@ pub(super) fn run_autonomous_marathon(
     }
 
     let has_pretrain_books = !book_chunks.is_empty();
-    // Subamostra até 400 blocos representativos dos livros para treinar o BPE em < 3s,
-    // mantendo todos os `book_chunks` completos para o treinamento neural da Fase 1!
     let mut combined_for_vocab = Vec::new();
     if book_chunks.len() > 400 {
         let step = book_chunks.len() / 400;
@@ -425,8 +423,6 @@ pub(super) fn run_autonomous_marathon(
     } else {
         combined_for_vocab.extend(book_chunks.iter().cloned());
     }
-    // Repete Q&A 6x no vocabulário para que comandos técnicos (`systemctl`, `docker`, `ss -tulnp`, `nginx`)
-    // recebam tokens BPE dedicados de alta prioridade!
     for _ in 0..6 {
         combined_for_vocab.extend(qa_examples.iter().cloned());
     }
@@ -544,9 +540,6 @@ pub(super) fn run_autonomous_marathon(
     let active_seq_len = trainer.model.config.max_seq_len;
     let total_params = trainer.model.config.total_params();
 
-    // Divide a sessão total em 2 estágios quando há livros de pré-treino:
-    // Estágio 1 (35% do tempo): Pré-Treino Geral (Livros + Q&A)
-    // Estágio 2 (65% do tempo): Fine-Tuning Supervisionado Focado em Q&A (`<user> ... <assistant>`)
     let total_secs = params.total_duration.as_secs_f64().max(1.0);
     let (stage1_dur, stage2_dur) = if has_pretrain_books {
         let s1 = Duration::from_secs_f64((total_secs * 0.35).max(0.5));
@@ -559,7 +552,6 @@ pub(super) fn run_autonomous_marathon(
         (None, params.total_duration)
     };
 
-    // Cerca de ~24 marcos distribuídos ao longo da sessão completa (ex.: a cada 15 min numa sessão de 6h)
     let eval_every = params
         .eval_every_secs
         .unwrap_or_else(|| ((total_secs / 24.0).round() as u64).clamp(1, 900));
@@ -650,7 +642,6 @@ pub(super) fn run_autonomous_marathon(
     let mut active_device_str = params.device.as_str().to_string();
     let mut was_cancelled = false;
 
-    // --- ESTÁGIO 1: PRÉ-TREINO EM LIVROS + Q&A ---
     if let Some(s1_dur) = stage1_dur {
         let mut stage1_corpus = book_chunks;
         for _ in 0..4 {
@@ -660,7 +651,7 @@ pub(super) fn run_autonomous_marathon(
             crate::neural::training::pack_sequences(&tokenizer, &stage1_corpus, active_seq_len);
         trainer.config.learning_rate = params.lr_override.unwrap_or(1.5e-3);
         trainer.config.min_learning_rate = 3.0e-4;
-        trainer.config.eval_interval = usize::MAX / 4; // Guiado por relógio (`eval_every`)
+        trainer.config.eval_interval = usize::MAX / 4;
 
         let s1_res = {
             let tok_ref = &tokenizer;
@@ -712,9 +703,7 @@ pub(super) fn run_autonomous_marathon(
         }
     }
 
-    // --- ESTÁGIO 2: FINE-TUNING SUPERVISIONADO EM CHAT TÉCNICO (`<user> ... <assistant>`) ---
     if !was_cancelled {
-        // Reinicia `best_val_loss` especificamente para selecionar o melhor modelo de diálogo na Fase 2
         trainer.best_val_loss = match crate::neural::training::evaluate_masked_loss(
             &trainer.model,
             &qa_val_masked,
@@ -779,7 +768,6 @@ pub(super) fn run_autonomous_marathon(
             Ok(rep) => {
                 active_device_str = rep.active_device;
                 was_cancelled = rep.cancelled;
-                // Garante um marco final consolidado ao encerrar a Fase 2
                 let final_val = crate::neural::training::evaluate_masked_loss(
                     &trainer.model,
                     &qa_val_masked,
