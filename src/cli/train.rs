@@ -4,10 +4,13 @@ use crate::app::neural_service::{
 };
 use crate::cli::error::{CliError, CliResult};
 use crate::eval::runner::parse_duration_str;
+use clap::error::ErrorKind as ClapErrorKind;
+use clap::{ArgAction, Error as ClapError, Parser};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Debug)]
 pub(crate) enum TrainCliParsed {
@@ -19,6 +22,196 @@ pub(crate) enum TrainCliParsed {
 pub(crate) enum EvalNeuralCliParsed {
     Help,
     Run(EvalNeuralRequest),
+}
+
+fn parse_positive_usize_clap(raw: &str) -> Result<usize, String> {
+    let v: usize = raw
+        .parse()
+        .map_err(|_| format!("valor inválido '{}': esperado inteiro maior que zero.", raw))?;
+    if v == 0 {
+        return Err("o valor deve ser maior que zero.".to_string());
+    }
+    Ok(v)
+}
+
+fn parse_positive_u64_clap(raw: &str) -> Result<u64, String> {
+    let v: u64 = raw
+        .parse()
+        .map_err(|_| format!("valor inválido '{}': esperado inteiro maior que zero.", raw))?;
+    if v == 0 {
+        return Err("o valor deve ser maior que zero.".to_string());
+    }
+    Ok(v)
+}
+
+fn parse_threads_clap(raw: &str) -> Result<usize, String> {
+    Ok(parse_positive_usize_clap(raw)?.min(64))
+}
+
+fn parse_positive_f32_clap(raw: &str) -> Result<f32, String> {
+    let v: f32 = raw.parse().map_err(|_| {
+        format!(
+            "valor inválido '{}': esperado número decimal maior que zero.",
+            raw
+        )
+    })?;
+    if !v.is_finite() || v <= 0.0 {
+        return Err("o valor deve ser maior que zero.".to_string());
+    }
+    Ok(v)
+}
+
+pub(crate) fn format_clap_error_pt(err: &ClapError, subcommand_label: &str) -> String {
+    let raw = err.to_string();
+    match err.kind() {
+        ClapErrorKind::UnknownArgument => {
+            format!(
+                "Argumento ou opção desconhecida em `{}`.\nDetalhe: {}",
+                subcommand_label,
+                raw.trim()
+            )
+        }
+        ClapErrorKind::ArgumentConflict => {
+            format!(
+                "Opção informada mais de uma vez ou em conflito em `{}`.\nDetalhe: {}",
+                subcommand_label,
+                raw.trim()
+            )
+        }
+        _ => format!(
+            "Argumentos inválidos em `{}`.\nDetalhe: {}",
+            subcommand_label,
+            raw.trim()
+        ),
+    }
+}
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "train-neural",
+    disable_help_flag = true,
+    disable_version_flag = true,
+    allow_negative_numbers = true
+)]
+struct TrainNeuralClapArgs {
+    #[arg(long = "help", short = 'h', action = ArgAction::SetTrue)]
+    help: bool,
+
+    #[arg(long = "marathon", action = ArgAction::SetTrue)]
+    marathon: bool,
+
+    #[arg(long = "max-duration", value_parser = parse_duration_str)]
+    max_duration: Option<Duration>,
+
+    #[arg(long = "eval-every-secs", value_parser = parse_positive_u64_clap)]
+    eval_every_secs: Option<u64>,
+
+    #[arg(long = "dataset")]
+    dataset: Option<PathBuf>,
+
+    #[arg(long = "corpus-dir", action = ArgAction::Append)]
+    corpus_dirs: Vec<PathBuf>,
+
+    #[arg(long = "chunk-chars", default_value_t = 1200, value_parser = parse_positive_usize_clap)]
+    chunk_chars: usize,
+
+    #[arg(long = "out")]
+    out_dir: Option<PathBuf>,
+
+    #[arg(long = "run-name")]
+    run_name: Option<String>,
+
+    #[arg(long = "resume", action = ArgAction::SetTrue)]
+    resume: bool,
+
+    #[arg(long = "steps", value_parser = parse_positive_usize_clap)]
+    steps: Option<usize>,
+
+    #[arg(long = "d-model", value_parser = parse_positive_usize_clap)]
+    d_model: Option<usize>,
+
+    #[arg(long = "layers", value_parser = parse_positive_usize_clap)]
+    layers: Option<usize>,
+
+    #[arg(long = "heads", value_parser = parse_positive_usize_clap)]
+    heads: Option<usize>,
+
+    #[arg(long = "ff", value_parser = parse_positive_usize_clap)]
+    ff: Option<usize>,
+
+    #[arg(long = "seq-len", value_parser = parse_positive_usize_clap)]
+    seq_len: Option<usize>,
+
+    #[arg(long = "batch-size", value_parser = parse_positive_usize_clap)]
+    batch_size: Option<usize>,
+
+    #[arg(long = "vocab", value_parser = parse_positive_usize_clap)]
+    vocab: Option<usize>,
+
+    #[arg(long = "lr", value_parser = parse_positive_f32_clap)]
+    lr: Option<f32>,
+
+    #[arg(long = "min-lr", value_parser = parse_positive_f32_clap)]
+    min_lr: Option<f32>,
+
+    #[arg(long = "max-val-windows", default_value_t = 128, value_parser = parse_positive_usize_clap)]
+    max_val_windows: usize,
+
+    #[arg(
+        long = "device",
+        default_value = "auto",
+        value_parser = crate::neural::ComputeDevice::parse
+    )]
+    device: crate::neural::ComputeDevice,
+
+    #[arg(long = "export-quant")]
+    export_quant: Option<PathBuf>,
+
+    #[arg(
+        long = "bits",
+        default_value = "int8",
+        value_parser = crate::neural::WeightPrecision::parse
+    )]
+    bits: crate::neural::WeightPrecision,
+
+    #[arg(long = "threads", value_parser = parse_threads_clap)]
+    threads: Option<usize>,
+}
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "eval-neural",
+    disable_help_flag = true,
+    disable_version_flag = true,
+    allow_negative_numbers = true
+)]
+struct EvalNeuralClapArgs {
+    #[arg(long = "help", short = 'h', action = ArgAction::SetTrue)]
+    help: bool,
+
+    #[arg(long = "dir")]
+    dir: Option<PathBuf>,
+
+    #[arg(long = "dataset")]
+    dataset: Option<PathBuf>,
+
+    #[arg(long = "quantize-out")]
+    quantize_out: Option<PathBuf>,
+
+    #[arg(long = "bits", value_parser = crate::neural::WeightPrecision::parse)]
+    bits: Option<crate::neural::WeightPrecision>,
+
+    #[arg(long = "kv-cache", value_parser = crate::neural::KvCachePrecision::parse)]
+    kv_cache: Option<crate::neural::KvCachePrecision>,
+
+    #[arg(long = "low-ram", action = ArgAction::SetTrue)]
+    low_ram: bool,
+
+    #[arg(long = "max-ram-mb", value_parser = parse_positive_usize_clap)]
+    max_ram_mb: Option<usize>,
+
+    #[arg(long = "threads", value_parser = parse_threads_clap)]
+    threads: Option<usize>,
 }
 
 fn print_train_neural_help(out: &mut dyn Write) {
@@ -61,169 +254,49 @@ fn print_train_neural_help(out: &mut dyn Write) {
 }
 
 pub(crate) fn parse_train_neural_args(args: &[String]) -> Result<TrainCliParsed, String> {
-    let mut p = TrainNeuralRequest {
-        dataset_path: None,
-        corpus_dirs: Vec::new(),
-        chunk_chars: 1200,
-        out_dir_opt: None,
-        run_name: None,
-        resume: false,
-        max_steps_opt: None,
-        max_duration_opt: None,
-        eval_every_secs_opt: None,
-        marathon: false,
-        d_model_opt: None,
-        n_heads_opt: None,
-        n_layers_opt: None,
-        d_ff_opt: None,
-        seq_len_opt: None,
-        batch_size_opt: None,
-        vocab_size_opt: None,
-        lr_opt: None,
-        min_learning_rate: None,
-        max_val_windows: 128,
-        device: crate::neural::ComputeDevice::Auto,
-        export_quant_dir: None,
-        export_bits: crate::neural::WeightPrecision::Int8,
-        threads_opt: None,
-    };
-
-    let parse_pos_usize = |flag: &str, raw: &str| -> Result<usize, String> {
-        let v: usize = raw.parse().map_err(|_| {
-            format!(
-                "Valor inválido '{}' para '{}': esperado inteiro positivo.",
-                raw, flag
-            )
-        })?;
-        if v == 0 {
-            return Err(format!("'{}' deve ser maior que zero.", flag));
-        }
-        Ok(v)
-    };
-
-    let parse_pos_f32 = |flag: &str, raw: &str| -> Result<f32, String> {
-        let v: f32 = raw.parse().map_err(|_| {
-            format!(
-                "Valor inválido '{}' para '{}': esperado número decimal positivo.",
-                raw, flag
-            )
-        })?;
-        if !v.is_finite() || v <= 0.0 {
-            return Err(format!("'{}' deve ser maior que zero.", flag));
-        }
-        Ok(v)
-    };
-
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--help" | "-h" => return Ok(TrainCliParsed::Help),
-            "--marathon" => {
-                p.marathon = true;
-                i += 1;
-            }
-            "--max-duration" if i + 1 < args.len() => {
-                p.max_duration_opt = Some(parse_duration_str(&args[i + 1])?);
-                i += 2;
-            }
-            "--eval-every-secs" if i + 1 < args.len() => {
-                p.eval_every_secs_opt =
-                    Some(parse_pos_usize("--eval-every-secs", &args[i + 1])? as u64);
-                i += 2;
-            }
-            "--threads" if i + 1 < args.len() => {
-                p.threads_opt = Some(parse_pos_usize("--threads", &args[i + 1])?.min(64));
-                i += 2;
-            }
-            "--export-quant" if i + 1 < args.len() => {
-                p.export_quant_dir = Some(PathBuf::from(&args[i + 1]));
-                i += 2;
-            }
-            "--bits" if i + 1 < args.len() => {
-                p.export_bits = crate::neural::WeightPrecision::parse(&args[i + 1])?;
-                i += 2;
-            }
-            "--device" if i + 1 < args.len() => {
-                p.device = crate::neural::ComputeDevice::parse(&args[i + 1])?;
-                i += 2;
-            }
-            "--dataset" if i + 1 < args.len() => {
-                p.dataset_path = Some(PathBuf::from(&args[i + 1]));
-                i += 2;
-            }
-            "--corpus-dir" if i + 1 < args.len() => {
-                p.corpus_dirs.push(PathBuf::from(&args[i + 1]));
-                i += 2;
-            }
-            "--chunk-chars" if i + 1 < args.len() => {
-                p.chunk_chars = parse_pos_usize("--chunk-chars", &args[i + 1])?;
-                i += 2;
-            }
-            "--out" if i + 1 < args.len() => {
-                p.out_dir_opt = Some(PathBuf::from(&args[i + 1]));
-                i += 2;
-            }
-            "--run-name" if i + 1 < args.len() => {
-                p.run_name = Some(args[i + 1].clone());
-                i += 2;
-            }
-            "--resume" => {
-                p.resume = true;
-                i += 1;
-            }
-            "--lr" if i + 1 < args.len() => {
-                p.lr_opt = Some(parse_pos_f32("--lr", &args[i + 1])?);
-                i += 2;
-            }
-            "--min-lr" if i + 1 < args.len() => {
-                p.min_learning_rate = Some(parse_pos_f32("--min-lr", &args[i + 1])?);
-                i += 2;
-            }
-            "--max-val-windows" if i + 1 < args.len() => {
-                p.max_val_windows = parse_pos_usize("--max-val-windows", &args[i + 1])?;
-                i += 2;
-            }
-            "--steps" if i + 1 < args.len() => {
-                p.max_steps_opt = Some(parse_pos_usize("--steps", &args[i + 1])?);
-                i += 2;
-            }
-            "--d-model" if i + 1 < args.len() => {
-                p.d_model_opt = Some(parse_pos_usize("--d-model", &args[i + 1])?);
-                i += 2;
-            }
-            "--layers" if i + 1 < args.len() => {
-                p.n_layers_opt = Some(parse_pos_usize("--layers", &args[i + 1])?);
-                i += 2;
-            }
-            "--heads" if i + 1 < args.len() => {
-                p.n_heads_opt = Some(parse_pos_usize("--heads", &args[i + 1])?);
-                i += 2;
-            }
-            "--ff" if i + 1 < args.len() => {
-                p.d_ff_opt = Some(parse_pos_usize("--ff", &args[i + 1])?);
-                i += 2;
-            }
-            "--seq-len" if i + 1 < args.len() => {
-                p.seq_len_opt = Some(parse_pos_usize("--seq-len", &args[i + 1])?);
-                i += 2;
-            }
-            "--batch-size" if i + 1 < args.len() => {
-                p.batch_size_opt = Some(parse_pos_usize("--batch-size", &args[i + 1])?);
-                i += 2;
-            }
-            "--vocab" if i + 1 < args.len() => {
-                p.vocab_size_opt = Some(parse_pos_usize("--vocab", &args[i + 1])?);
-                i += 2;
-            }
-            other => {
-                return Err(format!(
-                    "Argumento desconhecido em train-neural: '{}'",
-                    other
-                ))
-            }
+    if args.iter().any(|a| a == "--help" || a == "-h")
+        && !args.iter().any(|a| a.starts_with("--help="))
+    {
+        // Valida que não há flags desconhecidas/malformadas junto com --help se for apenas --help
+        if args.len() == 1 {
+            return Ok(TrainCliParsed::Help);
         }
     }
-    Ok(TrainCliParsed::Run(Box::new(p)))
+    let parsed = TrainNeuralClapArgs::try_parse_from(
+        std::iter::once("train-neural").chain(args.iter().map(|s| s.as_str())),
+    )
+    .map_err(|e| format_clap_error_pt(&e, "train-neural"))?;
+
+    if parsed.help {
+        return Ok(TrainCliParsed::Help);
+    }
+
+    Ok(TrainCliParsed::Run(Box::new(TrainNeuralRequest {
+        dataset_path: parsed.dataset,
+        corpus_dirs: parsed.corpus_dirs,
+        chunk_chars: parsed.chunk_chars,
+        out_dir_opt: parsed.out_dir,
+        run_name: parsed.run_name,
+        resume: parsed.resume,
+        max_steps_opt: parsed.steps,
+        max_duration_opt: parsed.max_duration,
+        eval_every_secs_opt: parsed.eval_every_secs,
+        marathon: parsed.marathon,
+        d_model_opt: parsed.d_model,
+        n_heads_opt: parsed.heads,
+        n_layers_opt: parsed.layers,
+        d_ff_opt: parsed.ff,
+        seq_len_opt: parsed.seq_len,
+        batch_size_opt: parsed.batch_size,
+        vocab_size_opt: parsed.vocab,
+        lr_opt: parsed.lr,
+        min_learning_rate: parsed.min_lr,
+        max_val_windows: parsed.max_val_windows,
+        device: parsed.device,
+        export_quant_dir: parsed.export_quant,
+        export_bits: parsed.bits,
+        threads_opt: parsed.threads,
+    })))
 }
 
 pub fn run_train_neural_cli_result(
@@ -299,75 +372,28 @@ fn print_eval_neural_help(out: &mut dyn Write) {
 }
 
 pub(crate) fn parse_eval_neural_args(args: &[String]) -> Result<EvalNeuralCliParsed, String> {
-    let mut p = EvalNeuralRequest {
-        ckpt_dir_opt: None,
-        dataset_path_opt: None,
-        quantize_out: None,
-        bits_opt: None,
-        kv_cache_opt: None,
-        low_ram: false,
-        max_ram_mb_opt: None,
-        threads_opt: None,
-    };
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--help" | "-h" => return Ok(EvalNeuralCliParsed::Help),
-            "--dir" if i + 1 < args.len() => {
-                p.ckpt_dir_opt = Some(PathBuf::from(&args[i + 1]));
-                i += 2;
-            }
-            "--dataset" if i + 1 < args.len() => {
-                p.dataset_path_opt = Some(PathBuf::from(&args[i + 1]));
-                i += 2;
-            }
-            "--quantize-out" if i + 1 < args.len() => {
-                p.quantize_out = Some(PathBuf::from(&args[i + 1]));
-                i += 2;
-            }
-            "--bits" if i + 1 < args.len() => {
-                p.bits_opt = Some(crate::neural::WeightPrecision::parse(&args[i + 1])?);
-                i += 2;
-            }
-            "--kv-cache" if i + 1 < args.len() => {
-                p.kv_cache_opt = Some(crate::neural::KvCachePrecision::parse(&args[i + 1])?);
-                i += 2;
-            }
-            "--low-ram" => {
-                p.low_ram = true;
-                i += 1;
-            }
-            "--max-ram-mb" if i + 1 < args.len() => {
-                match args[i + 1].parse::<usize>() {
-                    Ok(v) if v > 0 => p.max_ram_mb_opt = Some(v),
-                    _ => {
-                        return Err(
-                            "Valor inválido para '--max-ram-mb': esperado inteiro > 0.".to_string()
-                        );
-                    }
-                }
-                i += 2;
-            }
-            "--threads" if i + 1 < args.len() => {
-                match args[i + 1].parse::<usize>() {
-                    Ok(v) if v > 0 => p.threads_opt = Some(v.min(64)),
-                    _ => {
-                        return Err(
-                            "Valor inválido para '--threads': esperado inteiro > 0.".to_string()
-                        );
-                    }
-                }
-                i += 2;
-            }
-            other => {
-                return Err(format!(
-                    "Argumento desconhecido em eval-neural: '{}'",
-                    other
-                ))
-            }
-        }
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
+        return Ok(EvalNeuralCliParsed::Help);
     }
-    Ok(EvalNeuralCliParsed::Run(p))
+    let parsed = EvalNeuralClapArgs::try_parse_from(
+        std::iter::once("eval-neural").chain(args.iter().map(|s| s.as_str())),
+    )
+    .map_err(|e| format_clap_error_pt(&e, "eval-neural"))?;
+
+    if parsed.help {
+        return Ok(EvalNeuralCliParsed::Help);
+    }
+
+    Ok(EvalNeuralCliParsed::Run(EvalNeuralRequest {
+        ckpt_dir_opt: parsed.dir,
+        dataset_path_opt: parsed.dataset,
+        quantize_out: parsed.quantize_out,
+        bits_opt: parsed.bits,
+        kv_cache_opt: parsed.kv_cache,
+        low_ram: parsed.low_ram,
+        max_ram_mb_opt: parsed.max_ram_mb,
+        threads_opt: parsed.threads,
+    }))
 }
 
 pub fn run_eval_neural_cli_result(
@@ -392,7 +418,6 @@ mod tests {
     use super::*;
     use crate::test_support::TempDirGuard;
     use std::fs;
-    use std::time::Duration;
 
     fn to_vec(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| (*s).to_string()).collect()
@@ -510,7 +535,7 @@ mod tests {
             (&["--max-duration", "0s"], "maior que zero"),
             (&["--device", "tpu"], "--device"),
             (&["--bits", "int2"], "quantização"),
-            (&["--flag-invalida"], "desconhecido"),
+            (&["--flag-invalida"], "desconhecid"),
         ];
         for (raw, expected_substr) in invalid_table {
             let err = parse_train_neural_args(&to_vec(raw))
@@ -572,7 +597,7 @@ mod tests {
             (&["--max-ram-mb", "0"], "--max-ram-mb"),
             (&["--max-ram-mb", "abc"], "--max-ram-mb"),
             (&["--threads", "0"], "--threads"),
-            (&["--desconhecido"], "desconhecido"),
+            (&["--desconhecido"], "desconhecid"),
         ];
         for (raw, expected_substr) in invalid_table {
             let err = parse_eval_neural_args(&to_vec(raw))

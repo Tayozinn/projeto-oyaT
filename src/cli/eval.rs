@@ -8,6 +8,8 @@ use crate::eval::runner::{
     EvalProgressEvent, EvalRunConfig, EvalRunOutcome, DEFAULT_CONSECUTIVE_GLOBAL_FAILURES_LIMIT,
     DEFAULT_EVAL_REPEAT,
 };
+use clap::error::ErrorKind as ClapErrorKind;
+use clap::{ArgAction, Error as ClapError, Parser};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -459,303 +461,271 @@ struct ParsedEvalRunArgs {
     help_requested: bool,
 }
 
-fn split_flag(arg: &str) -> (&str, Option<&str>) {
-    match arg.split_once('=') {
-        Some((name, val)) => (name, Some(val)),
-        None => (arg, None),
-    }
-}
-
-fn take_flag_value(
-    args: &[String],
-    idx: &mut usize,
-    flag: &str,
-    inline: Option<&str>,
-) -> Result<String, String> {
-    let raw = match inline {
-        Some(v) => v,
-        None => {
-            let next_idx = *idx + 1;
-            let Some(next) = args.get(next_idx) else {
-                return Err(format!(
-                    "A opção '{}' requer um valor.\nPróxima ação: consulte `servermind-ai eval --help`.",
-                    flag
-                ));
-            };
-            if next.starts_with("--") {
-                return Err(format!(
-                    "A opção '{}' requer um valor antes de '{}'.",
-                    flag, next
-                ));
-            }
-            *idx = next_idx;
-            next.as_str()
-        }
-    };
+fn parse_non_empty_trimmed(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(format!(
-            "O valor informado para '{}' não pode ser vazio.",
-            flag
-        ));
+        return Err("o valor informado não pode ser vazio.".to_string());
     }
     Ok(trimmed.to_string())
 }
 
-fn set_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), String> {
-    if slot.is_some() {
-        return Err(format!(
-            "A opção '{}' foi informada mais de uma vez. Informe-a apenas uma vez.",
-            flag
-        ));
-    }
-    *slot = Some(value);
-    Ok(())
+fn parse_non_empty_path(raw: &str) -> Result<PathBuf, String> {
+    Ok(PathBuf::from(parse_non_empty_trimmed(raw)?))
 }
 
-fn push_csv_items(raw: &str, flag: &str, out_items: &mut Vec<String>) -> Result<(), String> {
-    for part in raw.split(',') {
-        let trimmed = part.trim();
-        if trimmed.is_empty() {
-            return Err(format!(
-                "Lista inválida para '{}': há um item vazio em '{}'.",
-                flag, raw
-            ));
+fn parse_local_ollama_url_clap(raw: &str) -> Result<String, String> {
+    let val = parse_non_empty_trimmed(raw)?;
+    AppConfig::validate_local_url(&val)?;
+    Ok(val)
+}
+
+fn parse_backend_clap(raw: &str) -> Result<crate::chat::backend::BackendKind, String> {
+    let val = parse_non_empty_trimmed(raw)?;
+    crate::chat::backend::BackendKind::parse(&val)
+}
+
+fn parse_positive_usize_eval_clap(raw: &str) -> Result<usize, String> {
+    let val = raw.trim().parse::<usize>().map_err(|_| {
+        format!(
+            "valor inválido '{}': informe um número inteiro positivo.",
+            raw
+        )
+    })?;
+    if val == 0 {
+        return Err("o valor deve ser um número inteiro maior que zero.".to_string());
+    }
+    Ok(val)
+}
+
+fn parse_positive_u64_eval_clap(raw: &str) -> Result<u64, String> {
+    let val = raw.trim().parse::<u64>().map_err(|_| {
+        format!(
+            "valor inválido '{}': informe um número inteiro positivo em segundos.",
+            raw
+        )
+    })?;
+    if val == 0 {
+        return Err("o valor deve ser um número inteiro maior que zero.".to_string());
+    }
+    Ok(val)
+}
+
+fn parse_repeat_clap(raw: &str) -> Result<usize, String> {
+    let n = parse_positive_usize_eval_clap(raw)?;
+    validate_repeat(n)
+}
+
+fn parse_duration_clap(raw: &str) -> Result<Duration, String> {
+    let val = parse_non_empty_trimmed(raw)?;
+    parse_duration_str(&val)
+}
+
+fn expand_csv_items(raw_list: &[String], flag: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for raw in raw_list {
+        for part in raw.split(',') {
+            let trimmed = part.trim();
+            if trimmed.is_empty() {
+                return Err(format!(
+                    "Lista inválida para '{}': há um item vazio em '{}'.",
+                    flag, raw
+                ));
+            }
+            out.push(trimmed.to_string());
         }
-        out_items.push(trimmed.to_string());
     }
-    Ok(())
+    Ok(out)
 }
 
-fn parse_categories_arg(raw: &str, categories: &mut Vec<EvalCategory>) -> Result<(), String> {
-    let mut names = Vec::new();
-    push_csv_items(raw, "--category", &mut names)?;
+fn expand_categories(raw_list: &[String]) -> Result<Vec<EvalCategory>, String> {
+    let names = expand_csv_items(raw_list, "--category")?;
+    let mut out = Vec::with_capacity(names.len());
     for name in names {
-        let parsed = EvalCategory::parse(&name)?;
-        categories.push(parsed);
+        out.push(EvalCategory::parse(&name)?);
     }
-    Ok(())
+    Ok(out)
 }
 
-fn parse_positive_usize(raw: &str, flag: &str) -> Result<usize, String> {
-    let val = raw.parse::<usize>().map_err(|_| {
-        format!(
-            "Valor inválido para '{}' ('{}'): informe um número inteiro positivo.",
-            flag, raw
-        )
-    })?;
-    if val == 0 {
-        return Err(format!(
-            "O valor de '{}' deve ser um número inteiro maior que zero.",
-            flag
-        ));
+fn format_eval_clap_error(err: &ClapError, subcommand: &str) -> String {
+    let raw = err.to_string();
+    match err.kind() {
+        ClapErrorKind::ArgumentConflict => format!(
+            "A opção foi informada mais de uma vez em `eval {}`.\nDetalhe: {}",
+            subcommand,
+            raw.trim()
+        ),
+        ClapErrorKind::UnknownArgument => {
+            if raw.contains("unexpected argument") && !raw.contains("'--") && !raw.contains("'-") {
+                format!(
+                    "Argumento posicional inesperado em `eval {}`.\nPróxima ação: use as opções nomeadas conforme `servermind-ai eval --help`.\nDetalhe: {}",
+                    subcommand,
+                    raw.trim()
+                )
+            } else {
+                format!(
+                    "Opção desconhecida para `eval {}`.\nPróxima ação: execute `servermind-ai eval --help`.\nDetalhe: {}",
+                    subcommand,
+                    raw.trim()
+                )
+            }
+        }
+        ClapErrorKind::TooManyValues => format!(
+            "A opção não aceita valor adicional ou argumento posicional inesperado em `eval {}`.\nDetalhe: {}",
+            subcommand,
+            raw.trim()
+        ),
+        _ => format!(
+            "Argumentos inválidos em `eval {}`.\nDetalhe: {}",
+            subcommand,
+            raw.trim()
+        ),
     }
-    Ok(val)
 }
 
-fn parse_positive_u64(raw: &str, flag: &str) -> Result<u64, String> {
-    let val = raw.parse::<u64>().map_err(|_| {
-        format!(
-            "Valor inválido para '{}' ('{}'): informe um número inteiro positivo em segundos.",
-            flag, raw
-        )
-    })?;
-    if val == 0 {
-        return Err(format!(
-            "O valor de '{}' deve ser um número inteiro maior que zero.",
-            flag
-        ));
-    }
-    Ok(val)
+#[derive(Debug, Parser)]
+#[command(
+    name = "list-cases",
+    disable_help_flag = true,
+    disable_version_flag = true,
+    allow_negative_numbers = true
+)]
+struct ListCasesClapArgs {
+    #[arg(long = "help", short = 'h', action = ArgAction::SetTrue)]
+    help: bool,
+
+    #[arg(long = "dataset", value_parser = parse_non_empty_path)]
+    dataset: Option<PathBuf>,
+
+    #[arg(long = "category", action = ArgAction::Append)]
+    categories: Vec<String>,
+
+    #[arg(long = "case", action = ArgAction::Append)]
+    cases: Vec<String>,
 }
 
-fn reject_unexpected_arg(arg: &str, subcommand: &str) -> String {
-    if arg.starts_with('-') {
-        format!(
-            "Opção desconhecida '{}' para `eval {}`.\nPróxima ação: execute `servermind-ai eval --help`.",
-            arg, subcommand
-        )
-    } else {
-        format!(
-            "Argumento posicional inesperado '{}' em `eval {}`.\nPróxima ação: use as opções nomeadas conforme `servermind-ai eval --help`.",
-            arg, subcommand
-        )
-    }
+#[derive(Debug, Parser)]
+#[command(
+    name = "list-models",
+    disable_help_flag = true,
+    disable_version_flag = true,
+    allow_negative_numbers = true
+)]
+struct ListModelsClapArgs {
+    #[arg(long = "help", short = 'h', action = ArgAction::SetTrue)]
+    help: bool,
+
+    #[arg(long = "ollama-url", value_parser = parse_local_ollama_url_clap)]
+    ollama_url: Option<String>,
+
+    #[arg(long = "timeout-secs", value_parser = parse_positive_u64_eval_clap)]
+    timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "run",
+    disable_help_flag = true,
+    disable_version_flag = true,
+    allow_negative_numbers = true
+)]
+struct EvalRunClapArgs {
+    #[arg(long = "help", short = 'h', action = ArgAction::SetTrue)]
+    help: bool,
+
+    #[arg(long = "backend", value_parser = parse_backend_clap)]
+    backend: Option<crate::chat::backend::BackendKind>,
+
+    #[arg(long = "model", value_parser = parse_non_empty_trimmed)]
+    model: Option<String>,
+
+    #[arg(long = "dataset", value_parser = parse_non_empty_path)]
+    dataset: Option<PathBuf>,
+
+    #[arg(long = "category", action = ArgAction::Append)]
+    categories: Vec<String>,
+
+    #[arg(long = "case", action = ArgAction::Append)]
+    cases: Vec<String>,
+
+    #[arg(long = "limit", value_parser = parse_positive_usize_eval_clap)]
+    limit: Option<usize>,
+
+    #[arg(long = "out-dir", value_parser = parse_non_empty_path)]
+    out_dir: Option<PathBuf>,
+
+    #[arg(long = "timeout-secs", value_parser = parse_positive_u64_eval_clap)]
+    timeout_secs: Option<u64>,
+
+    #[arg(long = "max-duration", value_parser = parse_duration_clap)]
+    max_duration: Option<Duration>,
+
+    #[arg(long = "repeat", value_parser = parse_repeat_clap)]
+    repeat: Option<usize>,
+
+    #[arg(long = "judge-model", value_parser = parse_non_empty_trimmed)]
+    judge_model: Option<String>,
+
+    #[arg(long = "ollama-url", value_parser = parse_local_ollama_url_clap)]
+    ollama_url: Option<String>,
+
+    #[arg(long = "with-kb", action = ArgAction::SetTrue)]
+    with_kb: bool,
 }
 
 fn parse_list_cases_args(args: &[String]) -> Result<ParsedListCasesArgs, String> {
-    let mut dataset = None;
-    let mut categories = Vec::new();
-    let mut case_ids = Vec::new();
-    let mut help_requested = false;
+    let raw = ListCasesClapArgs::try_parse_from(
+        std::iter::once("list-cases").chain(args.iter().map(|s| s.as_str())),
+    )
+    .map_err(|e| format_eval_clap_error(&e, "list-cases"))?;
 
-    let mut idx = 0;
-    while idx < args.len() {
-        let (flag, inline) = split_flag(&args[idx]);
-        match flag {
-            "--help" | "-h" => {
-                if inline.is_some() {
-                    return Err("A opção '--help' não aceita valor.".to_string());
-                }
-                help_requested = true;
-            }
-            "--dataset" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                set_once(&mut dataset, PathBuf::from(val), flag)?;
-            }
-            "--category" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                parse_categories_arg(&val, &mut categories)?;
-            }
-            "--case" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                push_csv_items(&val, flag, &mut case_ids)?;
-            }
-            _ => return Err(reject_unexpected_arg(&args[idx], "list-cases")),
-        }
-        idx += 1;
-    }
-
+    let categories = expand_categories(&raw.categories)?;
+    let case_ids = expand_csv_items(&raw.cases, "--case")?;
     Ok(ParsedListCasesArgs {
-        dataset,
+        dataset: raw.dataset,
         categories,
         case_ids,
-        help_requested,
+        help_requested: raw.help,
     })
 }
 
 fn parse_list_models_args(args: &[String]) -> Result<ParsedListModelsArgs, String> {
-    let mut ollama_url = None;
-    let mut timeout_secs = None;
-    let mut help_requested = false;
-
-    let mut idx = 0;
-    while idx < args.len() {
-        let (flag, inline) = split_flag(&args[idx]);
-        match flag {
-            "--help" | "-h" => {
-                if inline.is_some() {
-                    return Err("A opção '--help' não aceita valor.".to_string());
-                }
-                help_requested = true;
-            }
-            "--ollama-url" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                AppConfig::validate_local_url(&val)?;
-                set_once(&mut ollama_url, val, flag)?;
-            }
-            "--timeout-secs" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                let parsed = parse_positive_u64(&val, flag)?;
-                set_once(&mut timeout_secs, parsed, flag)?;
-            }
-            _ => return Err(reject_unexpected_arg(&args[idx], "list-models")),
-        }
-        idx += 1;
-    }
+    let raw = ListModelsClapArgs::try_parse_from(
+        std::iter::once("list-models").chain(args.iter().map(|s| s.as_str())),
+    )
+    .map_err(|e| format_eval_clap_error(&e, "list-models"))?;
 
     Ok(ParsedListModelsArgs {
-        ollama_url,
-        timeout_secs,
-        help_requested,
+        ollama_url: raw.ollama_url,
+        timeout_secs: raw.timeout_secs,
+        help_requested: raw.help,
     })
 }
 
 fn parse_eval_run_args(args: &[String]) -> Result<ParsedEvalRunArgs, String> {
-    let mut parsed = ParsedEvalRunArgs {
-        backend: None,
-        model: None,
-        dataset: None,
-        categories: Vec::new(),
-        case_ids: Vec::new(),
-        limit: None,
-        out_dir: None,
-        timeout_secs: None,
-        max_duration: None,
-        repeat: None,
-        judge_model: None,
-        ollama_url: None,
-        with_kb: false,
-        help_requested: false,
-    };
+    let raw = EvalRunClapArgs::try_parse_from(
+        std::iter::once("run").chain(args.iter().map(|s| s.as_str())),
+    )
+    .map_err(|e| format_eval_clap_error(&e, "run"))?;
 
-    let mut idx = 0;
-    while idx < args.len() {
-        let (flag, inline) = split_flag(&args[idx]);
-        match flag {
-            "--help" | "-h" => {
-                if inline.is_some() {
-                    return Err("A opção '--help' não aceita valor.".to_string());
-                }
-                parsed.help_requested = true;
-            }
-            "--backend" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                let kind = crate::chat::backend::BackendKind::parse(&val)?;
-                set_once(&mut parsed.backend, kind, flag)?;
-            }
-            "--model" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                set_once(&mut parsed.model, val, flag)?;
-            }
-            "--dataset" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                set_once(&mut parsed.dataset, PathBuf::from(val), flag)?;
-            }
-            "--category" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                parse_categories_arg(&val, &mut parsed.categories)?;
-            }
-            "--case" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                push_csv_items(&val, flag, &mut parsed.case_ids)?;
-            }
-            "--limit" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                let num = parse_positive_usize(&val, flag)?;
-                set_once(&mut parsed.limit, num, flag)?;
-            }
-            "--out-dir" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                set_once(&mut parsed.out_dir, PathBuf::from(val), flag)?;
-            }
-            "--timeout-secs" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                let secs = parse_positive_u64(&val, flag)?;
-                set_once(&mut parsed.timeout_secs, secs, flag)?;
-            }
-            "--max-duration" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                let dur = parse_duration_str(&val)?;
-                set_once(&mut parsed.max_duration, dur, flag)?;
-            }
-            "--repeat" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                let raw_rep = parse_positive_usize(&val, flag)?;
-                let rep = validate_repeat(raw_rep)?;
-                set_once(&mut parsed.repeat, rep, flag)?;
-            }
-            "--judge-model" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                set_once(&mut parsed.judge_model, val, flag)?;
-            }
-            "--ollama-url" => {
-                let val = take_flag_value(args, &mut idx, flag, inline)?;
-                AppConfig::validate_local_url(&val)?;
-                set_once(&mut parsed.ollama_url, val, flag)?;
-            }
-            "--with-kb" => {
-                if inline.is_some() {
-                    return Err("A opção '--with-kb' não aceita valor.".to_string());
-                }
-                parsed.with_kb = true;
-            }
-            _ => return Err(reject_unexpected_arg(&args[idx], "run")),
-        }
-        idx += 1;
-    }
+    let categories = expand_categories(&raw.categories)?;
+    let case_ids = expand_csv_items(&raw.cases, "--case")?;
 
-    Ok(parsed)
+    Ok(ParsedEvalRunArgs {
+        backend: raw.backend,
+        model: raw.model,
+        dataset: raw.dataset,
+        categories,
+        case_ids,
+        limit: raw.limit,
+        out_dir: raw.out_dir,
+        timeout_secs: raw.timeout_secs,
+        max_duration: raw.max_duration,
+        repeat: raw.repeat,
+        judge_model: raw.judge_model,
+        ollama_url: raw.ollama_url,
+        with_kb: raw.with_kb,
+        help_requested: raw.help,
+    })
 }
 
 fn resolve_eval_connection(
