@@ -1,8 +1,8 @@
-use crate::config::{AppConfig, DEFAULT_CUSTOM_INSTRUCTIONS};
-use crate::inference::{InferenceBackendKind, InferenceRouter, NeuralEngine};
-use crate::models::{Conversation, MemoryEntry, Message, OllamaHealth, Role};
-use crate::ollama::OllamaClient;
-use crate::storage::Storage;
+use crate::chat::config::{AppConfig, DEFAULT_CUSTOM_INSTRUCTIONS};
+use crate::chat::models::{Conversation, MemoryEntry, Message, OllamaHealth, Role};
+use crate::chat::ollama::OllamaClient;
+use crate::chat::storage::Storage;
+use crate::neural::inference::{InferenceBackendKind, InferenceRouter, NeuralEngine};
 
 pub const SETTING_ACTIVE_MODEL: &str = "active_model";
 pub const SETTING_CUSTOM_INSTRUCTIONS: &str = "custom_instructions";
@@ -339,8 +339,8 @@ impl AgentSession {
         for msg in non_system.into_iter().skip(skip) {
             request_messages.push(msg.clone());
         }
-        let kb_hits = crate::knowledge::retrieve_relevant_notes(trimmed, 2);
-        if let Some(grounding) = crate::knowledge::format_grounding_note(&kb_hits) {
+        let kb_hits = crate::chat::knowledge::retrieve_relevant_notes(trimmed, 2);
+        if let Some(grounding) = crate::chat::knowledge::format_grounding_note(&kb_hits) {
             request_messages.push(Message::new(Role::System, grounding));
         }
         request_messages.push(user_msg.clone());
@@ -352,7 +352,7 @@ impl AgentSession {
             trimmed,
             on_chunk,
         )?;
-        let reply = crate::guardrails::apply_advisory_guardrails(trimmed, &raw_reply);
+        let reply = crate::chat::guardrails::apply_advisory_guardrails(trimmed, &raw_reply);
 
         let _ = self.storage.save_conversation_turn(
             self.current_conversation.id,

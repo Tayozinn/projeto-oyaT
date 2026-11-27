@@ -6,16 +6,16 @@
 
 #![allow(clippy::large_enum_variant, clippy::manual_div_ceil)]
 
-use crate::infrastructure::RuntimeBudget;
-use crate::models::{Message, Role};
+use crate::chat::models::{Message, Role};
+use crate::chat::ollama::OllamaClient;
+use crate::neural::tokenizer::{
+    BpeTokenizer, ASSISTANT_TOKEN, BOS_TOKEN, EOS_TOKEN, PAD_TOKEN, SYSTEM_TOKEN, USER_TOKEN,
+};
 use crate::neural::{
     load_checkpoint, load_quantized_checkpoint, KvCachePrecision, ServerMindTransformer,
     TransformerConfig,
 };
-use crate::ollama::OllamaClient;
-use crate::tokenizer::{
-    BpeTokenizer, ASSISTANT_TOKEN, BOS_TOKEN, EOS_TOKEN, PAD_TOKEN, SYSTEM_TOKEN, USER_TOKEN,
-};
+use crate::platform::hardware::RuntimeBudget;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Read;
@@ -700,13 +700,15 @@ mod tests {
 
     #[test]
     fn sm008_low_end_8gb_budget_blocks_oversized_and_certifies_cpu_only_e2e_pipeline() {
-        use crate::infrastructure::{RuntimeBudget, RuntimeProfileKind};
         use crate::neural::ops::{
             effective_worker_threads, set_max_active_threads, worker_threads,
         };
         use crate::neural::quant::{QuantMatrix, WeightPrecision};
+        use crate::neural::training::{
+            pack_eval_sequences, pack_sequences, Trainer, TrainingConfig,
+        };
         use crate::neural::{quantize_model_in_memory, save_quantized_checkpoint, ComputeDevice};
-        use crate::training::{pack_eval_sequences, pack_sequences, Trainer, TrainingConfig};
+        use crate::platform::hardware::{RuntimeBudget, RuntimeProfileKind};
 
         // 1. Equivalência bit-a-bit entre `QuantMatrix::matmul_nn` multi-thread (`m=14`) e single-thread (`threads=1`)
         let (m, k, n) = (14usize, 131usize, 137usize); // m*k*n = 251_258 >= 131_072
@@ -881,10 +883,10 @@ mod tests {
     #[test]
     #[ignore]
     fn benchmark_sm008_prefill_mt_and_low_end_8gb_footprint() {
-        use crate::infrastructure::RuntimeBudget;
         use crate::neural::ops::{set_max_active_threads, worker_threads};
         use crate::neural::quant::WeightPrecision;
         use crate::neural::{quantize_model_in_memory, TransformerConfig};
+        use crate::platform::hardware::RuntimeBudget;
 
         let cfg = TransformerConfig {
             vocab_size: 4096,

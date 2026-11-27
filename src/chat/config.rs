@@ -1,4 +1,4 @@
-use crate::models::MemoryEntry;
+use crate::chat::models::MemoryEntry;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::env;

@@ -1,4 +1,4 @@
-use crate::models::{Conversation, MemoryEntry, Message, Role};
+use crate::chat::models::{Conversation, MemoryEntry, Message, Role};
 use rusqlite::{params, Connection, ErrorCode, Result as SqlResult};
 use std::fs;
 use std::io;

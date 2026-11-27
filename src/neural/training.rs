@@ -12,11 +12,11 @@
 #![allow(clippy::manual_is_multiple_of, clippy::type_complexity)]
 
 use crate::neural::gpu::GPU_AUTO_MIN_PARAMS;
+use crate::neural::tokenizer::{BpeTokenizer, ASSISTANT_TOKEN, SYSTEM_TOKEN, USER_TOKEN};
 use crate::neural::{
     load_checkpoint, save_checkpoint, AdamWState, ComputeDevice, ServerMindTransformer,
     TrainingWorkspace, TransformerGrads, VulkanDevice, VulkanTrainingSession,
 };
-use crate::tokenizer::{BpeTokenizer, ASSISTANT_TOKEN, SYSTEM_TOKEN, USER_TOKEN};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;

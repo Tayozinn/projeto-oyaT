@@ -9,8 +9,8 @@
 //! Este módulo **nunca** acessa `servermind.db`, não faz chamadas de rede e não imprime
 //! variáveis de ambiente ou prompts privados.
 
-use crate::eval_dataset::{EvalCase, EvalCategory, ExpectedBehavior, LoadedDataset};
-use crate::eval_metrics::{
+use crate::eval::dataset::{EvalCase, EvalCategory, ExpectedBehavior, LoadedDataset};
+use crate::eval::metrics::{
     judge_disagreements, rubric_documentation, score_level_label, DeterministicEvaluation,
     JudgeEvaluation, MetricDimension, RubricDimensionDoc, JUDGE_ESTIMATE_NOTICE, RUBRIC_VERSION,
     SCORE_MAX, SELF_JUDGING_WARNING,
@@ -704,16 +704,16 @@ pub fn build_eval_report(input: EvalReportInput) -> EvalReport {
         .judge_model
         .as_deref()
         .map(|jm| {
-            crate::eval_metrics::is_self_judging(jm, &input.model.resolved_name)
-                || crate::eval_metrics::is_self_judging(jm, &input.model.requested_name)
+            crate::eval::metrics::is_self_judging(jm, &input.model.resolved_name)
+                || crate::eval::metrics::is_self_judging(jm, &input.model.requested_name)
         })
         .unwrap_or(false)
         || input
             .judge_model
             .as_ref()
             .map(|jm| {
-                crate::eval_metrics::is_self_judging(&jm.resolved_name, &input.model.resolved_name)
-                    || crate::eval_metrics::is_self_judging(
+                crate::eval::metrics::is_self_judging(&jm.resolved_name, &input.model.resolved_name)
+                    || crate::eval::metrics::is_self_judging(
                         &jm.requested_name,
                         &input.model.requested_name,
                     )
@@ -1600,8 +1600,8 @@ pub fn write_report_bundle(out_dir: &Path, report: &EvalReport) -> Result<Report
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval_dataset::load_and_validate_dataset;
-    use crate::eval_metrics::{evaluate_deterministic, parse_judge_response};
+    use crate::eval::dataset::load_and_validate_dataset;
+    use crate::eval::metrics::{evaluate_deterministic, parse_judge_response};
     use crate::test_support::TempDirGuard;
     use std::time::Duration;
 

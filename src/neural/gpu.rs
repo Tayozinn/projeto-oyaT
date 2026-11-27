@@ -2549,7 +2549,7 @@ impl VulkanTrainingSession {
     /// Avalia a perda média sobre sequências mascaradas (`inputs`, `targets` com `pad_id` nas perguntas) na VRAM.
     pub fn evaluate_masked_loss(
         &mut self,
-        sequences: &[crate::training::MaskedSequence],
+        sequences: &[crate::neural::training::MaskedSequence],
         pad_id: usize,
     ) -> Result<Option<f32>, String> {
         if sequences.is_empty() || self.config.vocab_size == 0 {

@@ -4,8 +4,8 @@
 //! Segurança, Depuração e Programação), mede perplexity/val_loss, latência de inferência
 //! e compara objetivamente versões entre si e com o baseline Ollama.
 
-use crate::inference::{GenerationConfig, NeuralEngine};
-use crate::training::{evaluate_loss, pack_eval_sequences};
+use crate::neural::inference::{GenerationConfig, NeuralEngine};
+use crate::neural::training::{evaluate_loss, pack_eval_sequences};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -188,8 +188,8 @@ pub fn contains_keyword_boundary(haystack_lower: &str, kw_lower: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::neural::tokenizer::BpeTokenizer;
     use crate::neural::{save_checkpoint, ServerMindTransformer, TransformerConfig};
-    use crate::tokenizer::BpeTokenizer;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 

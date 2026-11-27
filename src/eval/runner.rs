@@ -15,20 +15,20 @@
 //! - Usa sempre o prompt de sistema reprodutível padrão ([`build_reproducible_system_prompt`]),
 //!   sem expor `system_prompt` privado de `config.toml` ou variáveis de ambiente nos relatórios.
 
-use crate::config::{AppConfig, DEFAULT_CUSTOM_INSTRUCTIONS, DEFAULT_TIMEOUT_SECS};
-use crate::eval_dataset::{
+use crate::chat::config::{AppConfig, DEFAULT_CUSTOM_INSTRUCTIONS, DEFAULT_TIMEOUT_SECS};
+use crate::chat::models::{Message, Role};
+use crate::chat::ollama::{InstalledModelInfo, OllamaChatOutcome, OllamaClient};
+use crate::eval::dataset::{
     filter_cases, load_and_validate_dataset, DatasetFilter, EvalCase, EvalCategory,
 };
-use crate::eval_metrics::{
+use crate::eval::metrics::{
     build_judge_prompt, evaluate_deterministic, judge_failure, parse_judge_response,
     JudgeEvaluation, MetricDimension, SCORE_MAX,
 };
-use crate::eval_report::{
+use crate::eval::report::{
     build_eval_report, write_report_bundle, CaseExecutionRecord, CaseExecutionStatus, EvalReport,
     EvalReportInput, EvalRunParams, ModelIdentification, ReportPaths,
 };
-use crate::models::{Message, Role};
-use crate::ollama::{InstalledModelInfo, OllamaChatOutcome, OllamaClient};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -811,8 +811,8 @@ where
 
             let mut messages = build_case_messages(case, &system_prompt);
             if config.use_kb {
-                let kb_hits = crate::knowledge::retrieve_relevant_notes(&case.question, 2);
-                if let Some(grounding) = crate::knowledge::format_grounding_note(&kb_hits) {
+                let kb_hits = crate::chat::knowledge::retrieve_relevant_notes(&case.question, 2);
+                if let Some(grounding) = crate::chat::knowledge::format_grounding_note(&kb_hits) {
                     messages.insert(1, Message::new(Role::System, grounding));
                 }
             }
@@ -850,7 +850,7 @@ where
                             .last()
                             .map(|m| m.content.as_str())
                             .unwrap_or(&case.question);
-                        let guarded_content = crate::guardrails::apply_advisory_guardrails(
+                        let guarded_content = crate::chat::guardrails::apply_advisory_guardrails(
                             user_prompt_text,
                             &content,
                         );
@@ -1051,8 +1051,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CREATOR_IDENTITY_INSTRUCTION, IMMUTABLE_SAFETY_INSTRUCTIONS};
-    use crate::ollama::OllamaModelDetails;
+    use crate::chat::config::{CREATOR_IDENTITY_INSTRUCTION, IMMUTABLE_SAFETY_INSTRUCTIONS};
+    use crate::chat::ollama::OllamaModelDetails;
     use crate::test_support::TempDirGuard;
     use std::cell::RefCell;
     use std::collections::VecDeque;

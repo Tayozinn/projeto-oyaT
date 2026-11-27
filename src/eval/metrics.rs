@@ -26,8 +26,8 @@
 //! positivos e falsos negativos. Notas numéricas **não** garantem correção técnica e **não**
 //! substituem a revisão humana.
 
-use crate::eval_dataset::{normalize_text, EvalCase, EvalCategory, ExpectedBehavior};
-use crate::models::{Message, Role};
+use crate::chat::models::{Message, Role};
+use crate::eval::dataset::{normalize_text, EvalCase, EvalCategory, ExpectedBehavior};
 use serde::{Deserialize, Serialize};
 
 /// Versão da rubrica/heurísticas determinísticas (mude ao alterar regras de pontuação).
@@ -2860,7 +2860,7 @@ pub fn judge_disagreements(det: &DeterministicEvaluation, judge: &JudgeEvaluatio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval_dataset::{load_and_validate_dataset, EvalDataset};
+    use crate::eval::dataset::{load_and_validate_dataset, EvalDataset};
     use std::path::Path;
 
     fn dataset() -> EvalDataset {

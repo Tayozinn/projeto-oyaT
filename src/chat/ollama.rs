@@ -1,5 +1,5 @@
-use crate::config::AppConfig;
-use crate::models::{Message, OllamaHealth};
+use crate::chat::config::AppConfig;
+use crate::chat::models::{Message, OllamaHealth};
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use reqwest::{StatusCode, Url};

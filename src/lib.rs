@@ -1,34 +1,19 @@
-pub(crate) mod agent;
+pub(crate) mod chat;
 pub(crate) mod cli;
-pub(crate) mod config;
-pub(crate) mod eval_dataset;
-pub(crate) mod eval_metrics;
-pub(crate) mod eval_report;
-pub(crate) mod eval_runner;
-pub(crate) mod evaluation;
-pub(crate) mod experience;
-pub(crate) mod guardrails;
-pub(crate) mod inference;
-pub(crate) mod infrastructure;
-pub(crate) mod knowledge;
-pub(crate) mod models;
+pub(crate) mod eval;
 pub(crate) mod neural;
-pub(crate) mod ollama;
 pub(crate) mod platform;
-pub(crate) mod storage;
 #[cfg(test)]
 pub(crate) mod test_support;
-pub(crate) mod tokenizer;
-pub(crate) mod training;
 
-use agent::AgentSession;
-use config::AppConfig;
-use ollama::OllamaClient;
+use chat::agent::AgentSession;
+use chat::config::AppConfig;
+use chat::ollama::OllamaClient;
+use chat::storage::Storage;
 use std::io::{self, Write};
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use storage::Storage;
 
 pub fn exit_code_from_i32(code: i32) -> ExitCode {
     ExitCode::from(code.clamp(0, 255) as u8)
@@ -132,16 +117,16 @@ pub fn run_from_env() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::agent::{AgentSession, SETTING_CUSTOM_INSTRUCTIONS};
-    use super::config::{
+    use super::chat::agent::{AgentSession, SETTING_CUSTOM_INSTRUCTIONS};
+    use super::chat::config::{
         AppConfig, DEFAULT_CUSTOM_INSTRUCTIONS, IMMUTABLE_SAFETY_INSTRUCTIONS,
         MAX_INSTRUCTIONS_CHARS,
     };
+    use super::chat::models::Role;
+    use super::chat::ollama::OllamaClient;
+    use super::chat::storage::Storage;
     use super::dispatch_cli_args_with_io;
-    use super::eval_report::EvalReport;
-    use super::models::Role;
-    use super::ollama::OllamaClient;
-    use super::storage::Storage;
+    use super::eval::report::EvalReport;
     use super::test_support::{
         lock_env_cwd, readonly_permissions_enforced_in_dir, CurrentDirGuard, EnvVarGuard,
         MockChatAction, MockOllamaServer, TempDirGuard,
@@ -303,13 +288,13 @@ mod tests {
         };
         let default_effective = default_cfg.effective_system_prompt(&[]);
         assert_eq!(
-            crate::config::CREATOR_IDENTITY_INSTRUCTION,
+            crate::chat::config::CREATOR_IDENTITY_INSTRUCTION,
             "Você foi criado pela empresa TayoX."
         );
         assert!(default_effective.contains(DEFAULT_CUSTOM_INSTRUCTIONS));
         assert_eq!(
             default_effective
-                .matches(crate::config::CREATOR_IDENTITY_INSTRUCTION)
+                .matches(crate::chat::config::CREATOR_IDENTITY_INSTRUCTION)
                 .count(),
             1
         );
@@ -319,7 +304,7 @@ mod tests {
         assert!(effective.contains(&valid));
         assert_eq!(
             effective
-                .matches(crate::config::CREATOR_IDENTITY_INSTRUCTION)
+                .matches(crate::chat::config::CREATOR_IDENTITY_INSTRUCTION)
                 .count(),
             1
         );
@@ -1571,7 +1556,7 @@ mod tests {
         fs::create_dir_all(&ckpt_dir).unwrap();
 
         let corpus = ["<user> Como ver portas? <assistant> Execute ss -tulnp."];
-        let tok = crate::tokenizer::BpeTokenizer::train_from_corpus(&corpus, 300);
+        let tok = crate::neural::tokenizer::BpeTokenizer::train_from_corpus(&corpus, 300);
         tok.save(&ckpt_dir.join("tokenizer.json")).unwrap();
         let cfg = crate::neural::TransformerConfig {
             vocab_size: tok.vocab_size(),
@@ -1842,7 +1827,7 @@ mod tests {
         // Último trecho sem `\n\n` fica retido no buffer até `finish()`, que entrega ele + avisos finais sem duplicar!
         assert_eq!(pbuf.push_chunk("Fim."), None);
         let raw_full = "Use `mysql -u root -pSegredoReal999` em modo leitura.\n\n```bash\nsudo systemctl restart nginx\n\necho ok\n```\n\nFim.";
-        let guarded_full = crate::guardrails::apply_advisory_guardrails(prompt, raw_full);
+        let guarded_full = crate::chat::guardrails::apply_advisory_guardrails(prompt, raw_full);
         let tail = pbuf.finish(&guarded_full);
         assert!(tail.contains("Fim."));
         assert!(tail.contains("Rotacione a senha/token"));
@@ -1938,7 +1923,7 @@ mod tests {
             &mut exp_out,
             &mut exp_err,
         );
-        let store = crate::experience::ExperienceStore::open(&exp_db).unwrap();
+        let store = crate::neural::experience_store::ExperienceStore::open(&exp_db).unwrap();
         let st_before = store.stats().unwrap();
         assert_eq!(st_before.experience_count, 1);
         assert_eq!(
