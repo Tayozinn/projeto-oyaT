@@ -591,7 +591,7 @@ mod tests {
         let default_effective = default_cfg.effective_system_prompt(&[]);
         assert_eq!(
             crate::config::CREATOR_IDENTITY_INSTRUCTION,
-            "Você foi criado por TayoX."
+            "Você foi criado pela empresa TayoX."
         );
         assert!(default_effective.contains(DEFAULT_CUSTOM_INSTRUCTIONS));
         assert_eq!(

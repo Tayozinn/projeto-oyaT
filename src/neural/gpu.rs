@@ -2529,6 +2529,55 @@ impl VulkanTrainingSession {
         }
     }
 
+    /// Avalia a perda média sobre sequências mascaradas (`inputs`, `targets` com `pad_id` nas perguntas) na VRAM.
+    pub fn evaluate_masked_loss(
+        &mut self,
+        sequences: &[crate::training::MaskedSequence],
+        pad_id: usize,
+    ) -> Result<f32, String> {
+        if sequences.is_empty() || self.config.vocab_size == 0 {
+            return Ok(0.0);
+        }
+        let v = self.config.vocab_size;
+        let mut total_loss = 0.0f64;
+        let mut total_tokens = 0usize;
+
+        for seq in sequences {
+            let t_usize = seq
+                .inputs
+                .len()
+                .min(seq.targets.len())
+                .min(self.config.max_seq_len);
+            if t_usize == 0 {
+                continue;
+            }
+            let valid_tokens = seq.targets[..t_usize]
+                .iter()
+                .filter(|&&tgt| tgt != pad_id && tgt < v)
+                .count();
+            if valid_tokens == 0 {
+                continue;
+            }
+            unsafe {
+                self.write_io_tokens(&seq.inputs[..t_usize], &seq.targets[..t_usize]);
+                self.begin_cmd()?;
+                self.record_forward_and_loss(t_usize as u32, pad_id as u32, false);
+                self.cmd_barrier_shader_to_host();
+                self.submit_and_wait()?;
+
+                let loss_sum = f32::from_bits(*self.io_mapped.add(self.io_out_loss as usize));
+                total_loss += loss_sum as f64;
+                total_tokens += valid_tokens;
+            }
+        }
+
+        if total_tokens == 0 {
+            Ok(0.0)
+        } else {
+            Ok((total_loss / total_tokens as f64) as f32)
+        }
+    }
+
     /// Escala gradientes (`1 / step_tokens`), calcula `grad_norm`, valida finitude (`SM-001`) e
     /// executa o passo `AdamW` completo diretamente na VRAM da GPU.
     pub fn step_adamw(

@@ -1731,6 +1731,8 @@ fn print_eval_run_summary<W: Write>(out: &mut W, outcome: &EvalRunOutcome) {
 
 fn resolve_default_neural_checkpoint_dir() -> &'static str {
     const CANDIDATES: &[&str] = &[
+        "checkpoints/servermind-neural-110m-int8",
+        "checkpoints/servermind-neural-110m",
         "checkpoints/servermind-neural-marathon-int8",
         "checkpoints/servermind-neural-marathon",
         "checkpoints/servermind-neural-v4-int8",
@@ -2028,12 +2030,36 @@ fn load_seed_corpus(dataset_path: &std::path::Path) -> Result<Vec<String>, Strin
         }
         let val: serde_json::Value = serde_json::from_str(trimmed)
             .map_err(|e| format!("Linha JSON inválida em '{}': {}", dataset_path.display(), e))?;
-        let prompt = val.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-        let response = val.get("response").and_then(|v| v.as_str()).unwrap_or("");
-        let norm = crate::tokenizer::normalize_corpus_text(&format!(
-            "<user> {}\n<assistant> {}",
-            prompt, response
-        ));
+        let dialogue = if let Some(turns) = val.get("turns").and_then(|v| v.as_array()) {
+            let mut buf = String::new();
+            for turn in turns {
+                let u = turn
+                    .get("user")
+                    .or_else(|| turn.get("prompt"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
+                let a = turn
+                    .get("assistant")
+                    .or_else(|| turn.get("response"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
+                if u.is_empty() && a.is_empty() {
+                    continue;
+                }
+                if !buf.is_empty() {
+                    buf.push('\n');
+                }
+                buf.push_str(&format!("<user> {}\n<assistant> {}", u, a));
+            }
+            buf
+        } else {
+            let prompt = val.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+            let response = val.get("response").and_then(|v| v.as_str()).unwrap_or("");
+            format!("<user> {}\n<assistant> {}", prompt, response)
+        };
+        let norm = crate::tokenizer::normalize_corpus_text(&dialogue);
         if !norm.is_empty() {
             examples.push(norm);
         }
@@ -2566,13 +2592,43 @@ pub fn run_train_neural_cli_with_cancel(
     };
 
     let active_seq_len = trainer.model.config.max_seq_len;
-    let train_windows = crate::training::pack_sequences(&tokenizer, &split.train, active_seq_len);
+    let use_chat_mask = corpus_dirs.is_empty();
     let val_src = if split.validation.is_empty() {
         &split.train
     } else {
         &split.validation
     };
-    let val_windows = crate::training::pack_eval_sequences(&tokenizer, val_src, active_seq_len);
+    let (train_windows, val_windows, masked_train_seqs, masked_val_seqs) = if use_chat_mask {
+        (
+            Vec::new(),
+            Vec::new(),
+            Some(crate::training::pack_chat_masked_sequences(
+                &tokenizer,
+                &split.train,
+                active_seq_len,
+            )),
+            Some(crate::training::pack_chat_masked_sequences(
+                &tokenizer,
+                val_src,
+                active_seq_len,
+            )),
+        )
+    } else {
+        (
+            crate::training::pack_sequences(&tokenizer, &split.train, active_seq_len),
+            crate::training::pack_eval_sequences(&tokenizer, val_src, active_seq_len),
+            None,
+            None,
+        )
+    };
+    let effective_train_count = masked_train_seqs
+        .as_ref()
+        .map(|m| m.len())
+        .unwrap_or(train_windows.len());
+    let effective_val_count = masked_val_seqs
+        .as_ref()
+        .map(|m| m.len())
+        .unwrap_or(val_windows.len());
     let total_params = trainer.model.config.total_params();
 
     let target_desc = if let Some(dur) = max_duration_opt {
@@ -2589,8 +2645,8 @@ pub fn run_train_neural_cli_with_cancel(
         active_seq_len,
         learning_rate,
         device.as_str(),
-        train_windows.len(),
-        val_windows.len(),
+        effective_train_count,
+        effective_val_count,
         target_desc
     );
     let _ = out.flush();
@@ -2651,6 +2707,8 @@ pub fn run_train_neural_cli_with_cancel(
             cancel_flag,
             install_ctrlc_handler,
             on_milestone: Some(&mut milestone_cb),
+            masked_train: masked_train_seqs.as_deref(),
+            masked_val: masked_val_seqs.as_deref(),
         };
         trainer.train_with_session_options(
             &train_windows,
@@ -2678,6 +2736,8 @@ pub fn run_train_neural_cli_with_cancel(
             cancel_flag,
             install_ctrlc_handler,
             on_milestone: None,
+            masked_train: masked_train_seqs.as_deref(),
+            masked_val: masked_val_seqs.as_deref(),
         };
         trainer.train_with_session_options(
             &train_windows,
@@ -2809,8 +2869,12 @@ impl EvolutionSequenceRecorder {
         }
     }
 
-    fn probe_prompts() -> [(&'static str, &'static str); 3] {
+    fn probe_prompts() -> [(&'static str, &'static str); 4] {
         [
+            (
+                "identity",
+                "Olá! Quem criou você e no que você pode me ajudar?",
+            ),
             (
                 "linux",
                 "Como diagnosticar uso alto de CPU e memória em um servidor Linux sem interromper processos?",
@@ -2856,8 +2920,8 @@ impl EvolutionSequenceRecorder {
         let gen = model.generate_with_kv_precision(
             &p_ids,
             40,
-            0.35,
-            8,
+            0.2,
+            5,
             &stops,
             seed,
             crate::neural::KvCachePrecision::Fp16,
@@ -2902,7 +2966,7 @@ impl EvolutionSequenceRecorder {
         out: &mut dyn Write,
     ) {
         let idx = self.entries.len();
-        let mut samples = Vec::with_capacity(3);
+        let mut samples = Vec::with_capacity(4);
         for (k, (dom, q)) in Self::probe_prompts().iter().enumerate() {
             let reply = Self::sample_model_reply(model, tok, q, 0x2026_5EED_u64 + k as u64);
             samples.push(ProbeOutputSample {
@@ -3061,13 +3125,18 @@ fn load_qa_datasets_combined(explicit_ds: Option<&PathBuf>) -> Result<Vec<String
     if let Some(ds) = explicit_ds {
         qa.extend(load_seed_corpus(ds)?);
     } else {
-        for cand in [
-            "datasets/servermind_corpus_v2.jsonl",
-            "datasets/servermind_seed_v1.jsonl",
-        ] {
-            let p = std::path::Path::new(cand);
-            if p.is_file() {
-                qa.extend(load_seed_corpus(p)?);
+        let v3 = std::path::Path::new("datasets/servermind_corpus_v3_balanced.jsonl");
+        if v3.is_file() {
+            qa.extend(load_seed_corpus(v3)?);
+        } else {
+            for cand in [
+                "datasets/servermind_corpus_v2.jsonl",
+                "datasets/servermind_seed_v1.jsonl",
+            ] {
+                let p = std::path::Path::new(cand);
+                if p.is_file() {
+                    qa.extend(load_seed_corpus(p)?);
+                }
             }
         }
     }
@@ -3248,13 +3317,15 @@ fn run_autonomous_marathon(
         .unwrap_or_else(|| ((total_secs / 24.0).round() as u64).clamp(1, 900));
 
     let qa_split = crate::tokenizer::split_dataset(&qa_examples, &run_name, 0.12, 0.05);
-    let qa_train_wins = crate::training::pack_sequences(&tokenizer, &qa_split.train, active_seq_len);
+    let qa_train_masked =
+        crate::training::pack_chat_masked_sequences(&tokenizer, &qa_split.train, active_seq_len);
     let qa_val_src = if qa_split.validation.is_empty() {
         &qa_split.train
     } else {
         &qa_split.validation
     };
-    let qa_val_wins = crate::training::pack_eval_sequences(&tokenizer, qa_val_src, active_seq_len);
+    let qa_val_masked =
+        crate::training::pack_chat_masked_sequences(&tokenizer, qa_val_src, active_seq_len);
 
     let _ = writeln!(
         out,
@@ -3365,10 +3436,12 @@ fn run_autonomous_marathon(
                 cancel_flag: params.cancel_flag.clone(),
                 install_ctrlc_handler: params.install_ctrlc_handler,
                 on_milestone: Some(&mut m_cb),
+                masked_train: None,
+                masked_val: Some(&qa_val_masked),
             };
             trainer.train_with_session_options(
                 &s1_train_wins,
-                &qa_val_wins,
+                &[],
                 tokenizer.pad_id(),
                 None,
                 opts,
@@ -3396,9 +3469,9 @@ fn run_autonomous_marathon(
     // --- ESTÁGIO 2: FINE-TUNING SUPERVISIONADO EM CHAT TÉCNICO (`<user> ... <assistant>`) ---
     if !was_cancelled {
         // Reinicia `best_val_loss` especificamente para selecionar o melhor modelo de diálogo na Fase 2
-        trainer.best_val_loss = crate::training::evaluate_loss(
+        trainer.best_val_loss = crate::training::evaluate_masked_loss(
             &trainer.model,
-            &qa_val_wins,
+            &qa_val_masked,
             tokenizer.pad_id(),
         );
         let _ = crate::neural::save_checkpoint(
@@ -3439,10 +3512,12 @@ fn run_autonomous_marathon(
                 cancel_flag: params.cancel_flag.clone(),
                 install_ctrlc_handler: params.install_ctrlc_handler,
                 on_milestone: Some(&mut m_cb),
+                masked_train: Some(&qa_train_masked),
+                masked_val: Some(&qa_val_masked),
             };
             trainer.train_with_session_options(
-                &qa_train_wins,
-                &qa_val_wins,
+                &[],
+                &[],
                 tokenizer.pad_id(),
                 None,
                 opts,
@@ -3454,9 +3529,9 @@ fn run_autonomous_marathon(
                 active_device_str = rep.active_device;
                 was_cancelled = rep.cancelled;
                 // Garante um marco final consolidado ao encerrar a Fase 2
-                let final_val = crate::training::evaluate_loss(
+                let final_val = crate::training::evaluate_masked_loss(
                     &trainer.model,
-                    &qa_val_wins,
+                    &qa_val_masked,
                     tokenizer.pad_id(),
                 );
                 recorder.record_milestone(

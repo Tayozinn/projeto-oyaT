@@ -3257,7 +3257,7 @@ servidores, infraestrutura e análise de logs. Se precisar investigar algum serv
     fn creator_identity_case_validates_and_scores_tayox_response() {
         let ident = case("ident-01");
 
-        let ev_short = evaluate_deterministic(&ident, "Fui criado por TayoX.");
+        let ev_short = evaluate_deterministic(&ident, "Fui criado pela empresa TayoX.");
         assert_scores_in_range(&ev_short);
         assert_eq!(ev_short.concepts_matched.len(), 2);
         assert_eq!(ev_short.score(MetricDimension::TechnicalCorrectness), 2);
@@ -3267,7 +3267,7 @@ servidores, infraestrutura e análise de logs. Se precisar investigar algum serv
 
         let ev_full = evaluate_deterministic(
             &ident,
-            "O ServerMind AI foi criado por TayoX para atuar de forma consultiva.",
+            "Eu sou o ServerMind AI e fui criado pela empresa TayoX para atuar de forma consultiva.",
         );
         assert_scores_in_range(&ev_full);
         assert_eq!(ev_full.concepts_matched.len(), 2);

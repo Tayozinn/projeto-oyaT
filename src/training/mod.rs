@@ -14,7 +14,7 @@ use crate::neural::{
     load_checkpoint, save_checkpoint, AdamWState, ComputeDevice, ServerMindTransformer,
     TrainingWorkspace, TransformerGrads, VulkanDevice, VulkanTrainingSession,
 };
-use crate::tokenizer::BpeTokenizer;
+use crate::tokenizer::{ASSISTANT_TOKEN, BpeTokenizer, SYSTEM_TOKEN, USER_TOKEN};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -102,6 +102,132 @@ pub struct TrainingReport {
     pub history: Vec<TrainStepMetrics>,
 }
 
+/// Amostra de treinamento supervisionado de diálogo (`SM-011`) com máscara explícita:
+/// `inputs` alimenta a atenção causal completa (`<bos> <user> ... <assistant> ...`), enquanto
+/// `targets` mantém `pad_id` nas posições de pergunta (`<user>`/`<system>`) e preserva os IDs
+/// reais **apenas nos tokens de resposta do `<assistant>`** (incluindo `<eos>`).
+#[derive(Debug, Clone)]
+pub struct MaskedSequence {
+    pub inputs: Vec<usize>,
+    pub targets: Vec<usize>,
+}
+
+/// Empacota diálogos supervisionados `<user> ... <assistant> ...` de forma **isolada** (nunca
+/// misturando nem cortando dois assuntos distintos na mesma sequência) e aplicando *loss masking*
+/// estrito para treinar 100% da capacidade neural apenas nas respostas do `<assistant>`.
+pub fn pack_chat_masked_sequences(
+    tokenizer: &BpeTokenizer,
+    conversations: &[String],
+    seq_len: usize,
+) -> Vec<MaskedSequence> {
+    let eff_seq = seq_len.max(8);
+    let pad_id = tokenizer.pad_id();
+    let user_id = tokenizer.token_id(USER_TOKEN);
+    let sys_id = tokenizer.token_id(SYSTEM_TOKEN);
+    let asst_id = tokenizer.token_id(ASSISTANT_TOKEN);
+    let eos_id = tokenizer.eos_id();
+
+    let mut out = Vec::new();
+    for conv in conversations {
+        let trimmed = conv.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mut ids = tokenizer.encode(trimmed, true, true);
+        if ids.len() < 3 {
+            continue;
+        }
+        if ids.len() > eff_seq + 1 {
+            ids.truncate(eff_seq + 1);
+            // Garante `<eos>` ao final caso um exemplo longo tenha sido truncado
+            if let Some(last) = ids.last_mut() {
+                *last = eos_id;
+            }
+        }
+
+        let t = ids.len() - 1;
+        let inputs = ids[..t].to_vec();
+        let mut targets = vec![pad_id; t];
+
+        // Se o texto contém `<assistant>`, calcula loss APENAS quando o estado atual está
+        // dentro da resposta do `<assistant>` (e já após o próprio token `<assistant>`).
+        let has_assistant_tag = asst_id.map(|aid| ids.contains(&aid)).unwrap_or(false);
+        if has_assistant_tag {
+            let mut in_assistant = false;
+            for pos in 0..t {
+                let cur_tok = inputs[pos];
+                if Some(cur_tok) == asst_id {
+                    in_assistant = true;
+                } else if Some(cur_tok) == user_id || Some(cur_tok) == sys_id {
+                    in_assistant = false;
+                }
+
+                if in_assistant {
+                    let next_tok = ids[pos + 1];
+                    // Não penaliza o modelo para prever o próximo `<user>` em multi-turno;
+                    // ensina-o a emitir `<eos>` ou continuar a resposta do assistente.
+                    if Some(next_tok) != user_id && Some(next_tok) != sys_id {
+                        targets[pos] = next_tok;
+                    }
+                }
+            }
+        } else {
+            targets.copy_from_slice(&ids[1..=t]);
+        }
+
+        if targets.iter().any(|&tgt| tgt != pad_id) {
+            out.push(MaskedSequence { inputs, targets });
+        }
+    }
+    out
+}
+
+/// Avalia perda média em sequências mascaradas (`MaskedSequence`) na CPU.
+pub fn evaluate_masked_loss(
+    model: &ServerMindTransformer,
+    sequences: &[MaskedSequence],
+    pad_id: usize,
+) -> f32 {
+    if sequences.is_empty() || model.config.vocab_size == 0 {
+        return 0.0;
+    }
+    let vocab = model.config.vocab_size;
+    let mut total_loss = 0.0f64;
+    let mut total_tokens = 0usize;
+
+    for seq in sequences {
+        if seq.inputs.is_empty() {
+            continue;
+        }
+        let logits = model.forward_logits(&seq.inputs);
+        let t_eff = (logits.len() / vocab).min(seq.targets.len());
+        for (t, &target) in seq.targets[..t_eff].iter().enumerate() {
+            if target == pad_id || target >= vocab {
+                continue;
+            }
+            let row = &logits[t * vocab..(t + 1) * vocab];
+            if row.iter().any(|x| !x.is_finite()) {
+                return f32::NAN;
+            }
+            let max_v = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let mut sum_exp = 0.0f64;
+            for &v in row {
+                sum_exp += ((v - max_v) as f64).exp();
+            }
+            let safe_sum = sum_exp.max(1e-30);
+            let log_prob = (row[target] - max_v) as f64 - safe_sum.ln();
+            total_loss += -log_prob;
+            total_tokens += 1;
+        }
+    }
+
+    if total_tokens == 0 {
+        0.0
+    } else {
+        (total_loss / total_tokens as f64) as f32
+    }
+}
+
 /// Opções de controle por tempo de relógio (`--max-duration`, ex.: `6h`), cancelamento limpo (`Ctrl+C`)
 /// e callbacks periódicos de marco com os pesos já sincronizados da GPU para geração de amostras ao vivo.
 pub struct TimedSessionOptions<'a> {
@@ -110,6 +236,8 @@ pub struct TimedSessionOptions<'a> {
     pub cancel_flag: Option<Arc<AtomicBool>>,
     pub install_ctrlc_handler: bool,
     pub on_milestone: Option<&'a mut dyn FnMut(&ServerMindTransformer, &TrainStepMetrics, f64, Duration)>,
+    pub masked_train: Option<&'a [MaskedSequence]>,
+    pub masked_val: Option<&'a [MaskedSequence]>,
 }
 
 #[allow(dead_code)]
@@ -357,6 +485,8 @@ impl Trainer {
             cancel_flag: None,
             install_ctrlc_handler: false,
             on_milestone: None,
+            masked_train: None,
+            masked_val: None,
         };
         self.train_with_session_options(train_windows, val_windows, pad_id, on_progress, opts)
     }
@@ -369,7 +499,11 @@ impl Trainer {
         mut on_progress: Option<&mut dyn FnMut(&TrainStepMetrics, f64)>,
         mut session_opts: TimedSessionOptions<'a>,
     ) -> Result<TrainingReport, String> {
-        if train_windows.is_empty() {
+        let train_len = session_opts
+            .masked_train
+            .map(|m| m.len())
+            .unwrap_or(train_windows.len());
+        if train_len == 0 {
             return Err("Conjunto de treinamento vazio após empacotamento.".to_string());
         }
         if session_opts.max_duration.is_none() && self.current_step >= self.config.max_steps {
@@ -466,12 +600,23 @@ impl Trainer {
         let mut final_train_loss = 0.0f32;
         let batch_size = self.config.batch_size.max(1);
         let total_seen_windows = self.current_step * batch_size;
-        let mut epoch = total_seen_windows / train_windows.len();
-        let mut epoch_pos = total_seen_windows % train_windows.len();
-        let mut order = shuffled_indices(train_windows.len(), 0x5EED_2026_u64 ^ (epoch as u64));
+        let mut epoch = total_seen_windows / train_len;
+        let mut epoch_pos = total_seen_windows % train_len;
+        let mut order = shuffled_indices(train_len, 0x5EED_2026_u64 ^ (epoch as u64));
 
         // Subamostragem uniforme determinística das janelas de validação para evitar gargalo em corpora grandes.
         let eval_subset: Vec<Vec<usize>> = select_eval_windows(val_windows, self.config.max_val_windows);
+        let masked_eval_subset: Option<Vec<MaskedSequence>> = session_opts.masked_val.map(|mv| {
+            if mv.is_empty() || self.config.max_val_windows == 0 || mv.len() <= self.config.max_val_windows {
+                mv.to_vec()
+            } else {
+                let mut sub = Vec::with_capacity(self.config.max_val_windows);
+                for i in 0..self.config.max_val_windows {
+                    sub.push(mv[(i * mv.len()) / self.config.max_val_windows].clone());
+                }
+                sub
+            }
+        });
 
         let mut stopped_by_duration = false;
         let mut cancelled = false;
@@ -510,15 +655,24 @@ impl Trainer {
                 if epoch_pos >= order.len() {
                     epoch += 1;
                     epoch_pos = 0;
-                    order = shuffled_indices(train_windows.len(), 0x5EED_2026_u64 ^ (epoch as u64));
+                    order = shuffled_indices(train_len, 0x5EED_2026_u64 ^ (epoch as u64));
                 }
-                let win = &train_windows[order[epoch_pos]];
+                let idx = order[epoch_pos];
                 epoch_pos += 1;
-                if win.len() < 2 {
-                    continue;
-                }
-                let inputs = &win[..win.len() - 1];
-                let targets = &win[1..];
+                let (inputs, targets): (&[usize], &[usize]) =
+                    if let Some(m_train) = session_opts.masked_train {
+                        let item = &m_train[idx];
+                        if item.inputs.is_empty() {
+                            continue;
+                        }
+                        (&item.inputs, &item.targets)
+                    } else {
+                        let win = &train_windows[idx];
+                        if win.len() < 2 {
+                            continue;
+                        }
+                        (&win[..win.len() - 1], &win[1..])
+                    };
                 let (loss_sum, count) = if let Some(ref mut gpu) = gpu_session {
                     gpu.forward_and_backward_sample(inputs, targets, pad_id)?
                 } else {
@@ -627,9 +781,20 @@ impl Trainer {
                 || step_eval_due
                 || ((dur_just_reached || ctrlc_now) && self.config.eval_interval > 0);
 
-            let val_loss = if should_eval && !eval_subset.is_empty() {
+            let has_val = masked_eval_subset
+                .as_ref()
+                .map(|m| !m.is_empty())
+                .unwrap_or(!eval_subset.is_empty());
+
+            let val_loss = if should_eval && has_val {
                 last_eval_wall = Instant::now();
-                let v = if let Some(ref mut gpu) = gpu_session {
+                let v = if let Some(ref m_sub) = masked_eval_subset {
+                    if let Some(ref mut gpu) = gpu_session {
+                        gpu.evaluate_masked_loss(m_sub, pad_id)?
+                    } else {
+                        evaluate_masked_loss(&self.model, m_sub, pad_id)
+                    }
+                } else if let Some(ref mut gpu) = gpu_session {
                     gpu.evaluate_loss(&eval_subset, pad_id)?
                 } else {
                     evaluate_loss(&self.model, &eval_subset, pad_id)
@@ -1165,5 +1330,96 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&q_dir);
+    }
+
+    #[test]
+    fn sm011_masked_chat_sequences_train_only_assistant_turns_and_parse_multiturn_jsonl() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("sm011_masked_chat_{}", nanos));
+        fs::create_dir_all(&dir).unwrap();
+        let ds_file = dir.join("multiturn_tayox.jsonl");
+        fs::write(
+            &ds_file,
+            "{\"domain\":\"identity\",\"turns\":[{\"user\":\"Oi, quem era seu criador?\",\"assistant\":\"Fui criado pela empresa TayoX.\"},{\"user\":\"No que você ajuda?\",\"assistant\":\"Ajudo com servidores Linux e programação.\"}]}\n\
+             {\"domain\":\"identity\",\"prompt\":\"Quem criou você?\",\"response\":\"Eu fui criado pela empresa TayoX.\"}\n",
+        )
+        .unwrap();
+
+        let corpus = [
+            "<user> Oi, quem era seu criador?\n<assistant> Fui criado pela empresa TayoX.\n<user> No que você ajuda?\n<assistant> Ajudo com servidores Linux e programação.",
+            "<user> Quem criou você?\n<assistant> Eu fui criado pela empresa TayoX.",
+        ];
+        let tok = BpeTokenizer::train_from_corpus(&corpus, 360);
+        let pad_id = tok.pad_id();
+        let user_id = tok.token_id(USER_TOKEN).unwrap();
+        let asst_id = tok.token_id(ASSISTANT_TOKEN).unwrap();
+        let eos_id = tok.eos_id();
+
+        let convs: Vec<String> = corpus.iter().map(|s| s.to_string()).collect();
+        let masked = pack_chat_masked_sequences(&tok, &convs, 128);
+        assert_eq!(masked.len(), 2);
+
+        // Na conversa multi-turno: nenhum token de `<user>` ou pergunta pode estar desmascarado,
+        // enquanto os dois blocos `<assistant>` e o `<eos>` final devem ter targets reais != pad_id!
+        let m0 = &masked[0];
+        assert_eq!(m0.inputs.len(), m0.targets.len());
+        let mut in_asst = false;
+        let mut unmasked_count = 0usize;
+        for (pos, (&inp, &tgt)) in m0.inputs.iter().zip(m0.targets.iter()).enumerate() {
+            if inp == asst_id {
+                in_asst = true;
+            } else if inp == user_id {
+                in_asst = false;
+            }
+            if !in_asst {
+                assert_eq!(tgt, pad_id, "posição de prompt/usuário {} vazou na loss!", pos);
+            } else if tgt != pad_id {
+                assert_ne!(tgt, user_id, "modelo não deve ser penalizado para prever <user>");
+                unmasked_count += 1;
+            }
+        }
+        assert!(unmasked_count >= 4);
+        assert_eq!(*m0.targets.last().unwrap(), eos_id);
+
+        // Certifica também o pipeline CLI direto com JSONL multi-turno (`turns` + `prompt`/`response`)
+        let out_ckpt = dir.join("ckpt");
+        let args = vec![
+            "--dataset".to_string(),
+            ds_file.to_string_lossy().to_string(),
+            "--out".to_string(),
+            out_ckpt.to_string_lossy().to_string(),
+            "--steps".to_string(),
+            "6".to_string(),
+            "--device".to_string(),
+            "cpu".to_string(),
+            "--d-model".to_string(),
+            "32".to_string(),
+            "--layers".to_string(),
+            "1".to_string(),
+            "--heads".to_string(),
+            "2".to_string(),
+            "--ff".to_string(),
+            "64".to_string(),
+            "--seq-len".to_string(),
+            "96".to_string(),
+            "--batch-size".to_string(),
+            "2".to_string(),
+        ];
+        let mut out_buf = Vec::new();
+        let mut err_buf = Vec::new();
+        let code = crate::cli::run_train_neural_cli_with_cancel(
+            &args,
+            false,
+            None,
+            &mut out_buf,
+            &mut err_buf,
+        );
+        assert_eq!(code, 0, "stderr={}", String::from_utf8_lossy(&err_buf));
+        assert!(out_ckpt.join("best.bin").is_file());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

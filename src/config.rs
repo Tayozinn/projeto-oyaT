@@ -21,7 +21,7 @@ Você é o SERVERMIND AI, um assistente local para administradores de sistemas e
 Responda sempre em português do Brasil, de forma clara, técnica, segura e objetiva.";
 
 /// Identidade fixa de criação do assistente, mantida centralmente e sempre preservada.
-pub const CREATOR_IDENTITY_INSTRUCTION: &str = "Você foi criado por TayoX.";
+pub const CREATOR_IDENTITY_INSTRUCTION: &str = "Você foi criado pela empresa TayoX.";
 
 /// Instruções imutáveis de segurança que são sempre preservadas independentemente da personalização.
 pub const IMMUTABLE_SAFETY_INSTRUCTIONS: &str = "\
