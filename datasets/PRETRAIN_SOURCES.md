@@ -2,7 +2,7 @@
 
 Este documento registra a procedência, as licenças abertas, o balanceamento matemático **50% / 50%** e o comando de treinamento da **Opção B (`112,9M` parâmetros — classe GPT-2 Base)** na **AMD Radeon RX 7600 (8 GB VRAM) + 16 GB RAM**.
 
-> **Nota sobre Git:** `datasets/pretrain_books/` e `datasets/pretrain_corpus_v2/` estão no `.gitignore` para manter o repositório Git enxuto, enquanto o dataset supervisionado `datasets/servermind_corpus_v3_balanced.jsonl` e o script `run_marathon_110m.ps1` permanecem versionáveis no projeto.
+> **Nota sobre Git:** `datasets/pretrain_books/` e `datasets/pretrain_corpus_v2/` estão no `.gitignore` para manter o repositório Git enxuto, enquanto o dataset supervisionado `datasets/servermind_corpus_v3_balanced.jsonl` e o script `scripts/run_marathon_110m.ps1` permanecem versionáveis no projeto.
 
 ---
 
@@ -41,10 +41,10 @@ Este documento registra a procedência, as licenças abertas, o balanceamento ma
 
 ```powershell
 # Noite 1 — Cria o modelo de 113M do zero, treina por 8h na RX 7600 e gera sequência evolutiva + INT8:
-.\run_marathon_110m.ps1 -Duration "8h"
+.\scripts\run_marathon_110m.ps1 -Duration "8h"
 
 # Noites seguintes — Continua evoluindo exatamente de onde parou:
-.\run_marathon_110m.ps1 -Resume -Duration "8h"
+.\scripts\run_marathon_110m.ps1 -Resume -Duration "8h"
 
 # Para conversar com o modelo de 113M no chat:
 .\target\release\servermind-ai.exe

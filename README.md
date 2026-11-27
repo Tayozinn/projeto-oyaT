@@ -9,19 +9,19 @@ O projeto é **estritamente consultivo**: ele não executa comandos no sistema o
 ## O que já funciona
 
 - **Motor Neural Próprio (`ServerMind Neural`)**: Transformer Decoder-only em Rust puro (zero dependências externas de ML), tokenizer BPE byte-level próprio, inferência com KV Cache (`fp32`/`fp16`/`int8`), streaming de tokens em tempo real, quantização pós-treino (`SMQ1`: `fp16`, `bf16`, `int8`, `int4`) e backend opcional de treinamento em GPU via **Vulkan Compute** (SPIR-V 1.3 nativo sem exigir Vulkan SDK).
-- **Alternância dinâmica de backend (`:backend`)**: permite alternar na mesma sessão entre o motor próprio (`:backend neural [dir]`) e modelos locais servidos pelo [Ollama](https://ollama.com/) (`:backend ollama`).
+- **Alternância dinâmica de backend (`:backend`)**: permite alternar na mesma sessão entre [Ollama](https://ollama.com/) local (`:backend ollama`, padrão), o motor próprio (`:backend neural [dir]`), **Claude Sonnet** oficial (`:backend claude`) e provedores com tier gratuito pré-configurado (`:backend presets` → `free-gemini`, `free-groq`, `free-mistral`, `free-openrouter`), com redação automática de segredos antes de qualquer envio remoto.
 - **Base de conhecimento local (`:kb`) e Memória em 3 Camadas (`:exp`)**: recuperação local de runbooks (`knowledge/sysadmin_kb.json`) e banco dedicado de experiências operacionais/treinamento (`ExperienceStore`) com gate de validação contra credenciais, comandos destrutivos e *prompt injection*.
-- **Conversa com Ollama local (fallback)**: restrito a loopback (`127.0.0.1`, `localhost` ou `[::1]`), com streaming NDJSON e seleção entre modelos instalados sem downloads automáticos.
+- **Conversa com Ollama local (padrão)**: restrito a loopback (`127.0.0.1`, `localhost` ou `[::1]`), com streaming NDJSON e seleção entre modelos instalados sem downloads automáticos.
 - **Histórico e contexto em SQLite**: reabertura de conversas anteriores (`:history`, `:load`), conversas isoladas (`:new`), instruções personalizadas (até 2.000 caracteres, preservando sempre a identidade de criação **TayoX** e as travas imutáveis de segurança) e memórias explícitas (`:remember`).
-- **Consulta somente leitura**: inspeção segura do banco SQLite via `abrir-sqlite.py`.
+- **Consulta somente leitura**: inspeção segura do banco SQLite via `scripts/abrir-sqlite.py`.
 
 ## Pré-requisitos
 
 - **Windows com PowerShell** ou **Linux** (os exemplos deste guia usam PowerShell).
 - **[Rust e Cargo](https://www.rust-lang.org/tools/install)** instalados.
-- **Para usar o ServerMind Neural (`:backend neural`)**: apenas o binário compilado e um diretório de checkpoint treinado (como `checkpoints/servermind-neural-v3`, `v2` ou `v1`) — **não exige Ollama rodando nem GPU dedicada**.
-- **Para usar o backend padrão Ollama *(opcional se usar apenas o neural)***: **[Ollama](https://ollama.com/)** instalado, em execução local e com pelo menos um modelo instalado (o ServerMind não baixa modelos automaticamente).
-- **Python 3** *(opcional)* — necessário apenas se você quiser usar o script `abrir-sqlite.py` para inspecionar o banco em modo somente leitura.
+- **Para usar o ServerMind Neural (`:backend neural`)**: apenas o binário compilado e um diretório de checkpoint treinado — **não exige Ollama rodando nem GPU dedicada**.
+- **Para usar o backend padrão Ollama *(opcional se usar neural ou API remota)***: **[Ollama](https://ollama.com/)** instalado, em execução local e com pelo menos um modelo instalado (o ServerMind não baixa modelos automaticamente).
+- **Python 3** *(opcional)* — necessário apenas se você quiser usar o script `scripts/abrir-sqlite.py` para inspecionar o banco em modo somente leitura.
 
 Para baixar um modelo pequeno de exemplo pelo Ollama:
 
@@ -119,9 +119,9 @@ Os comandos começam com `:` (todos também aceitam `/` como prefixo alternativo
 | Comando | Para que serve |
 | --- | --- |
 | `:help` | Mostra a lista completa de comandos. |
-| `:backend [ollama \| neural [dir]]` | Consulta o backend ativo ou alterna entre Ollama e o **ServerMind Neural** próprio. |
+| `:backend [nome \| presets] [arg]` | Consulta/alterna o backend (`ollama`, `neural`, `claude` ou presets gratuitos `:backend presets`). |
 | `:hw` | Inspeciona hardware local, suporte Vulkan/VRAM e benchmark de MatMul. |
-| `:train [steps]` | Treina um checkpoint experimental do ServerMind Neural do zero (padrão: `60` passos). |
+| `:train [steps \| marathon]` | Treina um checkpoint experimental do ServerMind Neural do zero (padrão: `80` passos). |
 | `:quantize <src> <dst> [fp16\|bf16\|int8\|int4]` | Exporta um checkpoint FP32 para pacote quantizado compacto `SMQ1` (`quantized.smq` + `tokenizer.json`). |
 | `:kb [consulta]` | Lista todos os runbooks da base técnica local (`knowledge/sysadmin_kb.json`) ou busca por relevância. |
 | `:exp [stats \| list \| op \| add \| export]` | Gerencia a Memória em 3 Camadas (`servermind_experiences.db`) e exporta exemplos aprovados em JSONL. |
@@ -214,15 +214,15 @@ Depois de identificar o banco desejado:
   Edite `database_path` em `config.toml` apontando para o arquivo desejado (relativo à pasta do `config.toml` ou absoluto).
 - **Inspeção somente leitura com Python**:
   ```powershell
-  python .\abrir-sqlite.py "C:\caminho\encontrado\servermind.db"
+  python .\scripts\abrir-sqlite.py "C:\caminho\encontrado\servermind.db"
   ```
 
-## Banco SQLite e consulta somente leitura (`abrir-sqlite.py`)
+## Banco SQLite e consulta somente leitura (`scripts/abrir-sqlite.py`)
 
 Para consultar o banco padrão que fica na pasta do projeto:
 
 ```powershell
-python .\abrir-sqlite.py
+python .\scripts\abrir-sqlite.py
 ```
 
 O script usa a biblioteca padrão `sqlite3` do Python, abre o banco com `?mode=ro` (somente leitura) e aceita apenas consultas `SELECT` ou `WITH`.
@@ -239,7 +239,7 @@ SELECT id, conversation_id, role, created_at FROM messages ORDER BY id DESC LIMI
 Para consultar outro arquivo de banco:
 
 ```powershell
-python .\abrir-sqlite.py "C:\caminho\para\outro-banco.db"
+python .\scripts\abrir-sqlite.py "C:\caminho\para\outro-banco.db"
 ```
 
 ## Configuração (`config.toml`)
@@ -394,32 +394,15 @@ Consulte o guia completo e as regras do schema `1.0` em [`eval/README.md`](eval/
 
 ## Estrutura do projeto
 
-- `src/main.rs`: roteamento CLI (`eval`, `train-neural`, `eval-neural`, `hw`, `--help`), inicialização do chat e testes integrados offline.
-- `src/cli.rs`: interface interativa de terminal, comandos `:backend` / `:train` / `:quantize` / `:kb` / `:exp` / `:hw` e subcomandos CLI.
-- `src/inference/mod.rs`: `InferenceRouter` e `NeuralEngine` unificando `Ollama` (fallback) e `ServerMindNeural` com streaming e KV Cache configurável.
-- `src/neural/`: Transformer Decoder-only em Rust puro (`mod.rs`), kernels CPU `AVX2+FMA` (`ops.rs`), quantização `SMQ1` `FP16`/`BF16`/`INT8`/`INT4` (`quant.rs`) e backend GPU Vulkan Compute + gerador SPIR-V 1.3 (`gpu.rs`, `spirv.rs`).
-- `src/tokenizer/mod.rs`: tokenizer BPE byte-level próprio, normalização e divisão determinística de datasets.
-- `src/training/mod.rs`: pipeline de treinamento (`Trainer`, warmup + cosine decay, empacotamento de sequências, retomada de checkpoints e `metrics.jsonl`).
-- `src/experience/mod.rs`: Memória em 3 Camadas (`ExperienceStore` SQLite) com gate de validação para exemplos de treinamento.
-- `src/evaluation/mod.rs`: suíte técnica do `eval-neural` em 6 domínios (`linux`, `docker`, `network`, `security`, `debugging`, `programming`).
-- `src/infrastructure/mod.rs`: sondagem de hardware, estimativa de RAM/VRAM e benchmarks de MatMul CPU/GPU.
-- `src/knowledge.rs` e `knowledge/sysadmin_kb.json`: base de conhecimento local (runbooks de diagnóstico) injetada como grounding seguro.
-- `src/guardrails.rs`: guardrails determinísticos locais de segurança, sanitização e redação de credenciais.
-- `src/agent.rs`: coordenação de sessão, janela deslizante de contexto, instruções personalizadas e memórias explícitas.
-- `src/ollama.rs`: cliente HTTP local (com streaming NDJSON) para a API do Ollama (`/api/tags` e `/api/chat`).
-- `src/storage.rs`: validação de caminho/permissões e persistência SQLite (`servermind.db`).
-- `src/config.rs`: carregamento determinístico de configuração, validação de URL local e gravação segura de `config.toml`.
-- `src/models.rs`: estruturas de dados compartilhadas.
-- `src/eval_dataset.rs`, `src/eval_metrics.rs`, `src/eval_report.rs`, `src/eval_runner.rs`: motor de avaliação reproduzível da Fase 1 (`eval/cases_v1.json`).
-- `datasets/` e `checkpoints/`: corpora JSONL/pré-treino e artefatos treinados do `ServerMind Neural` (`v1`, `v2`, `v3`).
-- `docs/`: documentação arquitetural detalhada (`architecture.md`, `training.md`, `HANDOFF.md` e especificações `SM-001`..`SM-007`).
-- `abrir-sqlite.py`: utilitário Python para consulta SQL somente leitura.
-
-## Resumo das alterações da Fase 0
-
-- **Validação estrita da URL do Ollama (`0.2`)**: parsing estruturado via `reqwest::Url` + checagem da string bruta, bloqueio de `0.0.0.0`/`[::]`/userinfo/paths/queries/fragmentos/IPs ofuscados, cliente HTTP com `.no_proxy()` e `Policy::none()`, e verificação de loopback via `ToSocketAddrs`.
-- **Resolução determinística de caminhos (`0.1` / `0.3`)**: ancoragem previsível de `config.toml` e `database_path` sem criar múltiplos bancos por `CWD`, preservação de valores originais ao salvar `config.toml`, validação explícita de caminhos/permissões em `Storage::new` e propagação real de erros do SQLite em `AgentSession::new` (sem silenciamento).
-- **Erros e diagnósticos seguros (`0.4`)**: mensagens em português com causa, próxima ação e detalhe técnico sanitizado, sem expor prompts, conversas, memórias ou segredos.
-- **Privacidade local (`.gitignore`, `0.5`)**: cobertura ampliada de bancos SQLite/WAL/journal, arquivos `.env`, logs, temporários e pasta `eval_reports/`.
-- **Documentação e script de consulta (`0.6`)**: correção da consulta de exemplo em `abrir-sqlite.py` e `README.md` (removendo referência à coluna inexistente `updated_at`) e atualização completa do guia de uso e solução de problemas.
-- **Testes automatizados offline**: cobertura isolada em `std::env::temp_dir()` para URLs, caminhos relativos/absolutos, variáveis de ambiente, diretórios inexistentes, arquivos somente leitura/corrompidos, propagação de erros, privacidade em falhas e subcomandos `eval` sem tocar `servermind.db`.
+- `src/main.rs` e `src/lib.rs`: ponto de entrada enxuto (`ExitCode`), API interna da biblioteca e testes integrados offline.
+- `src/chat/`: domínio conversacional — `agent.rs` (sessão e janela deslizante), `backend.rs` (`ModelBackend`: Ollama, Neural, Claude e presets OpenAI-compat gratuitos), `redaction.rs` (redação determinística de segredos de saída), `ollama.rs` (streaming NDJSON local), `config.rs` (configuração e anti-SSRF loopback), `guardrails.rs` (travas consultivas), `knowledge.rs` e `storage.rs` (SQLite transacional).
+- `src/cli/`: interface de linha de comando modularizada (`repl.rs`, `eval.rs`, `train.rs`, `marathon.rs`, `quantize.rs`, `hw.rs`).
+- `src/eval/`: motor de avaliação offline reproduzível (`dataset.rs`, `metrics.rs`, `report.rs`, `runner.rs`, `neural_eval.rs`).
+- `src/neural/`: Transformer Decoder-only em Rust puro (`mod.rs`), kernels CPU `AVX2+FMA` (`ops.rs`), quantização `SMQ1` (`quant.rs`), backend GPU Vulkan Compute + SPIR-V 1.3 (`gpu.rs`, `spirv.rs`), `tokenizer.rs`, `training.rs`, `inference.rs` e `experience_store.rs`.
+- `src/platform/`: infraestrutura transversal (`hardware.rs` e `signals.rs`).
+- `eval/`: suíte oficial reproduzível (`cases_v1.json`, `study_cases.json` e `README.md`).
+- `knowledge/sysadmin_kb.json`: base de conhecimento técnica local (runbooks verificados).
+- `datasets/`: corpora supervisionados JSONL (`servermind_seed_v1.jsonl`, `servermind_corpus_v2.jsonl`, `servermind_corpus_v3_balanced.jsonl`) e catálogo de fontes (`PRETRAIN_SOURCES.md`).
+- `docs/`: documentação viva (`PLANO_EVOLUCAO.md`, `EVAL_BACKENDS.md`, `architecture.md`, `training.md`) e histórico técnico arquivado (`docs/archive/neural/`).
+- `scripts/`: utilitários auxiliares (`abrir-sqlite.py` para consulta SQL somente leitura e `run_marathon_110m.ps1`).
+- `tests/`: testes de integração do binário e snapshots dos textos de `--help`.

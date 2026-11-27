@@ -4,11 +4,11 @@
 # ==============================================================================
 # Uso:
 #   1. Primeira noite (cria do zero, treina por 8h, gera sequência evolutiva + INT8):
-#      .\run_marathon_110m.ps1
+#      .\scripts\run_marathon_110m.ps1
 #   2. Noite customizada (ex.: 6h):
-#      .\run_marathon_110m.ps1 -Duration "6h"
+#      .\scripts\run_marathon_110m.ps1 -Duration "6h"
 #   3. Continuar nas noites seguintes (Noite 2, Noite 3... acumulando inteligência):
-#      .\run_marathon_110m.ps1 -Resume -Duration "8h"
+#      .\scripts\run_marathon_110m.ps1 -Resume -Duration "8h"
 # ==============================================================================
 
 param(
@@ -17,7 +17,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Exe = Join-Path $PSScriptRoot "target\release\servermind-ai.exe"
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
+$Exe = Join-Path $ProjectRoot "target\release\servermind-ai.exe"
 
 if (-not (Test-Path $Exe)) {
     Write-Host "[ERRO] Executável '$Exe' não encontrado. Rode 'cargo build --release --locked' primeiro." -ForegroundColor Red
@@ -53,4 +54,9 @@ if ($Resume) {
 }
 
 Write-Host "Iniciando ServerMind Neural 113M (50% Servidores / 50% Programação) na AMD RX 7600 por $Duration..." -ForegroundColor Cyan
-& $Exe @ArgsList
+Push-Location $ProjectRoot
+try {
+    & $Exe @ArgsList
+} finally {
+    Pop-Location
+}

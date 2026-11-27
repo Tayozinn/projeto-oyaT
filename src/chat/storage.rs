@@ -195,7 +195,7 @@ impl Storage {
                 ),
                 ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked => (
                     "o banco SQLite está bloqueado por outro processo ou conexão ativa.",
-                    "Feche outras instâncias do ServerMind AI ou sessões abertas (como abrir-sqlite.py) e tente novamente.",
+                    "Feche outras instâncias do ServerMind AI ou sessões abertas (como scripts/abrir-sqlite.py) e tente novamente.",
                 ),
                 ErrorCode::DiskFull => (
                     "espaço em disco insuficiente para gravar no banco SQLite.",

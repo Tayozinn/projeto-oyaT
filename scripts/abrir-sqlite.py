@@ -3,14 +3,14 @@ from pathlib import Path
 import sqlite3
 import sys
 
-base_dir = os.path.dirname(os.path.abspath(__file__))
-DB = sys.argv[1] if len(sys.argv) > 1 else os.path.join(base_dir, "servermind.db")
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB = sys.argv[1] if len(sys.argv) > 1 else os.path.join(project_root, "servermind.db")
 DB = os.path.abspath(DB)
 
 if os.path.isdir(DB):
     raise SystemExit(
         f"Erro: o caminho informado é um diretório, não um arquivo SQLite: {DB}\n"
-        "Próxima ação: informe o caminho completo de um arquivo .db, ex.: python .\\abrir-sqlite.py \"C:\\caminho\\servermind.db\""
+        "Próxima ação: informe o caminho completo de um arquivo .db, ex.: python .\\scripts\\abrir-sqlite.py \"C:\\caminho\\servermind.db\""
     )
 
 if not os.path.isfile(DB):
