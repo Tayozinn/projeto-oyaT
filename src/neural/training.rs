@@ -244,7 +244,7 @@ pub struct TimedSessionOptions<'a> {
     pub masked_val: Option<&'a [MaskedSequence]>,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunComparison {
     pub run_a_name: String,
@@ -313,7 +313,7 @@ pub fn pack_eval_sequences(
 
 /// Empacota textos tokenizados em janelas de `seq_len.max(8) + 1` usando passo explícito `stride`,
 /// sem jamais duplicar a última janela quando divisível pelo stride.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub fn pack_sequences_with_stride(
     tokenizer: &BpeTokenizer,
     texts: &[String],
@@ -483,7 +483,6 @@ impl Trainer {
         }
     }
 
-    #[allow(dead_code)]
     pub fn resume_from_checkpoint(
         checkpoint_path: &Path,
         config: TrainingConfig,
@@ -500,7 +499,7 @@ impl Trainer {
         })
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn train(
         &mut self,
         train_windows: &[Vec<usize>],
@@ -510,6 +509,7 @@ impl Trainer {
         self.train_with_progress(train_windows, val_windows, pad_id, None)
     }
 
+    #[cfg(test)]
     pub fn train_with_progress(
         &mut self,
         train_windows: &[Vec<usize>],
@@ -1121,7 +1121,7 @@ fn append_metric_jsonl(path: &Path, metric: &TrainStepMetrics) -> Result<(), Str
     writeln!(file, "{}", line).map_err(|e| format!("Falha ao escrever linha de métrica: {}", e))
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn compare_training_runs(run_a: &TrainingReport, run_b: &TrainingReport) -> RunComparison {
     let delta = run_b.best_val_loss - run_a.best_val_loss;
     let verdict = if delta < -1e-4 {

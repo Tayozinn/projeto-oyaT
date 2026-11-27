@@ -1,63 +1,79 @@
 use super::hw::handle_hw_command;
 use super::quantize::handle_quantize_command;
-use super::train::run_train_neural_cli;
+use super::train::{run_train_neural_cli, DEFAULT_TRAIN_STEPS};
 use crate::chat::agent::AgentSession;
 use crate::chat::config::{
     CREATOR_IDENTITY_INSTRUCTION, IMMUTABLE_SAFETY_INSTRUCTIONS, MAX_INSTRUCTIONS_CHARS,
 };
 use crate::chat::models::{OllamaHealth, Role};
 use crate::chat::ollama::OllamaClient;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 
 /// Interface interativa de terminal (CLI) para o administrador.
 pub fn run_terminal_loop(session: &mut AgentSession) {
-    print_banner(session);
-    print_health_report(session);
+    let stdin = io::stdin();
+    let mut reader = stdin.lock();
+    let mut out = io::stdout();
+    let mut err = io::stderr();
+    run_terminal_loop_with_io(session, &mut reader, &mut out, &mut err, true);
+}
 
-    println!(
+/// Versão com `BufRead` e `Write` injetados do loop interativo do REPL (`T5`).
+pub(crate) fn run_terminal_loop_with_io(
+    session: &mut AgentSession,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    enable_spinner: bool,
+) {
+    print_banner(session, out);
+    print_health_report(session, out, err);
+
+    let _ = writeln!(
+        out,
         "\nDigite sua mensagem e pressione Enter, ou use um comando (ex: :help, :models, :history, :new, :instructions, :quit)."
     );
 
-    let stdin = io::stdin();
     loop {
-        print!(
+        let _ = write!(
+            out,
             "\n[Conversa #{} | {}] Administrador > ",
             session.current_conversation().id,
             session.config().model
         );
-        let _ = io::stdout().flush();
+        let _ = out.flush();
 
-        let mut input = String::new();
-        match stdin.read_line(&mut input) {
+        let mut line = String::new();
+        match input.read_line(&mut line) {
             Ok(0) => {
-                println!("\nEncerrando SERVERMIND AI. Até logo!");
+                let _ = writeln!(out, "\nEncerrando SERVERMIND AI. Até logo!");
                 break;
             }
             Ok(_) => {
-                let trimmed = input.trim();
+                let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
 
                 if is_repl_command_input(trimmed) {
-                    if handle_command(trimmed, session) {
+                    if handle_command_with_io(trimmed, session, input, out, err) {
                         break;
                     }
                     continue;
                 }
 
-                let mut spinner = SpinnerHandle::spawn(true);
+                let mut spinner = SpinnerHandle::spawn(enable_spinner);
                 let mut para_buf = ParagraphStreamBuffer::new(trimmed);
                 let mut started_output = false;
                 let stream_res = session.send_user_message_streaming(trimmed, |chunk| {
                     if let Some(ready_para) = para_buf.push_chunk(chunk) {
                         if !started_output {
                             spinner.stop_and_join();
-                            println!("\nSERVERMIND AI >");
+                            let _ = writeln!(out, "\nSERVERMIND AI >");
                             started_output = true;
                         }
-                        print!("{}", ready_para);
-                        let _ = io::stdout().flush();
+                        let _ = write!(out, "{}", ready_para);
+                        let _ = out.flush();
                     }
                 });
                 spinner.stop_and_join();
@@ -65,33 +81,33 @@ pub fn run_terminal_loop(session: &mut AgentSession) {
                     Ok(guarded_reply) => {
                         let tail = para_buf.finish(&guarded_reply);
                         if !started_output {
-                            println!("\nSERVERMIND AI >\n{}", tail);
+                            let _ = writeln!(out, "\nSERVERMIND AI >\n{}", tail);
                         } else if !tail.is_empty() {
-                            print!("{}", tail);
+                            let _ = write!(out, "{}", tail);
                             if !tail.ends_with('\n') {
-                                println!();
+                                let _ = writeln!(out);
                             }
                         }
                     }
-                    Err(err) => {
+                    Err(e) => {
                         if started_output {
-                            println!();
+                            let _ = writeln!(out);
                         }
-                        eprintln!("\n[ERRO AO PROCESSAR MENSAGEM]\n{}", err);
+                        let _ = writeln!(err, "\n[ERRO AO PROCESSAR MENSAGEM]\n{}", e);
                     }
                 }
             }
-            Err(err) => {
-                eprintln!("\nErro ao ler entrada do terminal: {}", err);
+            Err(e) => {
+                let _ = writeln!(err, "\nErro ao ler entrada do terminal: {}", e);
                 break;
             }
         }
     }
 }
 
-fn read_prompt_line() -> Result<Option<String>, String> {
+fn read_prompt_line(input: &mut dyn BufRead) -> Result<Option<String>, String> {
     let mut buf = String::new();
-    match io::stdin().read_line(&mut buf) {
+    match input.read_line(&mut buf) {
         Ok(0) => Ok(None),
         Ok(_) => Ok(Some(buf)),
         Err(err) => Err(format!(
@@ -101,47 +117,73 @@ fn read_prompt_line() -> Result<Option<String>, String> {
     }
 }
 
-fn print_banner(session: &AgentSession) {
+fn print_banner(session: &AgentSession, out: &mut dyn Write) {
     let instr_status = if session.is_default_instructions() {
         "Padrão"
     } else {
         "Personalizadas"
     };
-    println!("======================================================================");
-    println!("       SERVERMIND AI - Assistente Conversacional Local (Fase 0)       ");
-    println!("       Assistente Conversacional Local para Administradores           ");
-    println!("======================================================================");
-    println!(
+    let _ = writeln!(
+        out,
+        "======================================================================"
+    );
+    let _ = writeln!(
+        out,
+        "       SERVERMIND AI - Assistente Consultivo Local                    "
+    );
+    let _ = writeln!(
+        out,
+        "       Assistente Conversacional Local para Administradores           "
+    );
+    let _ = writeln!(
+        out,
+        "======================================================================"
+    );
+    let _ = writeln!(
+        out,
         "  Origem da config       : {} ({})",
         session.config().config_source,
         session.config().config_file_path
     );
-    println!("  URL do Ollama (local)  : {}", session.config().ollama_url);
-    println!("  Modelo ativo           : {}", session.config().model);
-    println!(
+    let _ = writeln!(
+        out,
+        "  URL do Ollama (local)  : {}",
+        session.config().ollama_url
+    );
+    let _ = writeln!(out, "  Modelo ativo           : {}", session.config().model);
+    let _ = writeln!(
+        out,
         "  Instruções do agente   : {} (+ travas de segurança ativas)",
         instr_status
     );
-    println!(
+    let _ = writeln!(
+        out,
         "  Banco SQLite local     : {}",
         session.config().database_path
     );
-    println!("  Modo de operação       : Estritamente conversacional (sem execução)");
-    println!("======================================================================");
+    let _ = writeln!(
+        out,
+        "  Modo de operação       : Estritamente conversacional (sem execução)"
+    );
+    let _ = writeln!(
+        out,
+        "======================================================================"
+    );
 }
 
-fn print_health_report(session: &AgentSession) {
+fn print_health_report(session: &AgentSession, out: &mut dyn Write, err: &mut dyn Write) {
     let health: OllamaHealth = session.check_health();
     if health.server_reachable && health.model_installed {
-        println!(
+        let _ = writeln!(
+            out,
             "[STATUS OK] Conectado ao Ollama local ({} modelo(s) instalado(s)). Modelo ativo: '{}'.",
             health.available_models.len(),
             session.config().model
         );
     } else {
-        eprintln!("\n[ATENÇÃO - VERIFICAÇÃO DE AMBIENTE]");
+        let _ = writeln!(err, "\n[ATENÇÃO - VERIFICAÇÃO DE AMBIENTE]");
         if let Some(msg) = health.error_message {
-            eprintln!("{}", msg);
+            let _ = writeln!(err, "{}", msg);
         }
     }
 }
@@ -379,8 +421,15 @@ pub(crate) fn is_repl_command_input(trimmed: &str) -> bool {
     false
 }
 
-/// Processa comandos iniciados por `:` ou `/`. Retorna `true` se o programa deve encerrar.
-fn handle_command(cmd_line: &str, session: &mut AgentSession) -> bool {
+/// Processa comandos iniciados por `:` ou `/` usando `BufRead` e `Write` injetados (`T5`).
+/// Retorna `true` se o programa deve encerrar.
+pub(crate) fn handle_command_with_io(
+    cmd_line: &str,
+    session: &mut AgentSession,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> bool {
     let prefix = &cmd_line[..1];
     let without_prefix = &cmd_line[1..];
     let mut parts = without_prefix.splitn(2, char::is_whitespace);
@@ -389,7 +438,8 @@ fn handle_command(cmd_line: &str, session: &mut AgentSession) -> bool {
 
     match raw_cmd.as_str() {
         "quit" | "exit" | "sair" | "q" => {
-            println!(
+            let _ = writeln!(
+                out,
                 "Encerrando SERVERMIND AI. Histórico e configurações salvos localmente em '{}' e '{}'.",
                 session.config().database_path,
                 session.config().config_file_path
@@ -397,100 +447,125 @@ fn handle_command(cmd_line: &str, session: &mut AgentSession) -> bool {
             return true;
         }
         "help" | "ajuda" | "h" | "?" => {
-            print_help();
+            print_help(out);
         }
         "models" | "model" | "modelos" | "modelo" => {
-            handle_models_command(arg, session);
+            handle_models_command(arg, session, input, out, err);
         }
         "history" | "historico" | "hist" => {
-            handle_history_command(arg, session);
+            handle_history_command(arg, session, input, out, err);
         }
         "load" | "open" | "carregar" | "abrir" => {
             if arg.is_empty() {
-                eprintln!(
+                let _ = writeln!(
+                    err,
                     "Uso correto: :history (para selecionar da lista) ou :load <id> (ex: :load 1)"
                 );
             } else {
-                reopen_conversation_by_str(arg, session);
+                reopen_conversation_by_str(arg, session, out, err);
             }
         }
         "new" | "nova" => match session.start_new_conversation() {
             Ok(conv) => {
-                println!(
+                let _ = writeln!(
+                    out,
                     "Nova conversa separada iniciada (ID #{}, modelo '{}'). As conversas anteriores permanecem intactas em :history.",
                     conv.id, conv.model
                 );
             }
-            Err(err) => eprintln!("Erro ao iniciar nova conversa: {}", err),
+            Err(e) => {
+                let _ = writeln!(err, "Erro ao iniciar nova conversa: {}", e);
+            }
         },
         "instructions" | "instruction" | "prompt" | "instrucoes" | "instrucao" => {
-            handle_instructions_command(arg, session);
+            handle_instructions_command(arg, session, input, out, err);
         }
         "remember" | "lembrar" | "memorizar" => {
             if arg.is_empty() {
-                eprintln!(
+                let _ = writeln!(
+                    err,
                     "Uso correto: :remember <informação que deseja salvar na memória explícita>"
                 );
             } else {
                 match session.add_explicit_memory(arg) {
                     Ok(mem) => {
-                        println!(
+                        let _ = writeln!(
+                            out,
                             "Memória explícita #{} salva localmente no SQLite: \"{}\"",
                             mem.id, mem.content
                         );
                     }
-                    Err(err) => eprintln!("Erro ao salvar memória: {}", err),
+                    Err(e) => {
+                        let _ = writeln!(err, "Erro ao salvar memória: {}", e);
+                    }
                 }
             }
         }
         "memories" | "memorias" | "memory" => {
-            handle_memories_command(arg, session);
+            handle_memories_command(arg, session, out, err);
         }
         "forget" | "esquecer" => {
             if arg.is_empty() {
-                eprintln!("Uso correto: :forget <id_da_memoria> (consulte os IDs com :memories)");
+                let _ = writeln!(
+                    err,
+                    "Uso correto: :forget <id_da_memoria> (consulte os IDs com :memories)"
+                );
             } else {
                 match arg.parse::<i64>() {
                     Ok(id) if id > 0 => match session.delete_memory(id) {
-                        Ok(true) => println!("Memória explícita #{} removida com sucesso.", id),
-                        Ok(false) => {
-                            eprintln!("Memória #{} não encontrada. Use :memories para listar.", id)
+                        Ok(true) => {
+                            let _ =
+                                writeln!(out, "Memória explícita #{} removida com sucesso.", id);
                         }
-                        Err(err) => eprintln!("Erro ao remover memória: {}", err),
+                        Ok(false) => {
+                            let _ = writeln!(
+                                err,
+                                "Memória #{} não encontrada. Use :memories para listar.",
+                                id
+                            );
+                        }
+                        Err(e) => {
+                            let _ = writeln!(err, "Erro ao remover memória: {}", e);
+                        }
                     },
-                    _ => eprintln!(
-                        "ID inválido '{}'. Informe um número inteiro positivo da memória.",
-                        arg
-                    ),
+                    _ => {
+                        let _ = writeln!(
+                            err,
+                            "ID inválido '{}'. Informe um número inteiro positivo da memória.",
+                            arg
+                        );
+                    }
                 }
             }
         }
         "context" | "contexto" => {
-            print_current_conversation_messages(session);
+            print_current_conversation_messages(session, out);
         }
         "status" => {
-            print_health_report(session);
+            print_health_report(session, out, err);
         }
         "kb" | "estudo" | "study" => {
-            handle_kb_command(arg);
+            handle_kb_command(arg, session, out);
         }
         "backend" => {
-            handle_backend_command(arg, session);
+            handle_backend_command(arg, session, out, err);
         }
         "hw" | "hardware" => {
-            handle_hw_command();
+            handle_hw_command(out);
         }
         "train" | "treinar" => {
-            handle_train_command(arg);
+            handle_train_command(arg, out, err);
         }
         "exp" | "experiencias" => {
-            handle_exp_command(arg);
+            handle_exp_command(arg, session, out, err);
         }
         "quantize" | "quantizar" => {
-            handle_quantize_command(arg);
+            let base_dir = session.config().config_dir();
+            handle_quantize_command(arg, &base_dir, out, err);
         }
         _ => {
-            eprintln!(
+            let _ = writeln!(
+                err,
                 "Comando desconhecido: '{}{}'. Digite :help (ou /ajuda) para ver os comandos disponíveis.",
                 prefix, raw_cmd
             );
@@ -500,86 +575,160 @@ fn handle_command(cmd_line: &str, session: &mut AgentSession) -> bool {
     false
 }
 
-fn print_help() {
-    println!("\nComandos disponíveis (aceitam prefixo ':' ou '/'):");
-    println!("  --- Seleção de Modelos (Ollama Local) ---");
-    println!("  :models                  - Lista os modelos instalados no Ollama local e permite trocar interativamente");
-    println!("  :model <nome_ou_numero>  - Troca para outro modelo instalado e persiste a escolha localmente");
-    println!("  :status                  - Verifica a disponibilidade do Ollama e do modelo ativo");
-    println!("\n  --- Histórico e Conversas ---");
-    println!("  :history                 - Lista conversas salvas e permite escolher uma para reabrir com seu contexto");
-    println!("  :history <id>            - Reabre diretamente a conversa pelo ID informado");
-    println!(
+fn print_help(out: &mut dyn Write) {
+    let _ = writeln!(out, "\nComandos disponíveis (aceitam prefixo ':' ou '/'):");
+    let _ = writeln!(out, "  --- Seleção de Modelos (Ollama Local) ---");
+    let _ = writeln!(
+        out,
+        "  :models                  - Lista os modelos instalados no Ollama local e permite trocar interativamente"
+    );
+    let _ = writeln!(
+        out,
+        "  :model <nome_ou_numero>  - Troca para outro modelo instalado e persiste a escolha localmente"
+    );
+    let _ = writeln!(
+        out,
+        "  :status                  - Verifica a disponibilidade do Ollama e do modelo ativo"
+    );
+    let _ = writeln!(out, "\n  --- Histórico e Conversas ---");
+    let _ = writeln!(
+        out,
+        "  :history                 - Lista conversas salvas e permite escolher uma para reabrir com seu contexto"
+    );
+    let _ = writeln!(
+        out,
+        "  :history <id>            - Reabre diretamente a conversa pelo ID informado"
+    );
+    let _ = writeln!(
+        out,
         "  :new                     - Inicia uma nova conversa separada sem apagar as anteriores"
     );
-    println!("  :context                 - Exibe todas as mensagens da conversa ativa");
-    println!("\n  --- Instruções do Assistente ---");
-    println!("  :instructions            - Exibe as instruções atuais, regras de segurança e como personalizar");
-    println!("  :instructions <texto>    - Define e persiste novas instruções personalizadas (máx. {} caracteres)", MAX_INSTRUCTIONS_CHARS);
-    println!("  :instructions edit       - Abre prompt interativo para digitar novas instruções");
-    println!("  :instructions reset      - Restaura as instruções padrão do assistente");
-    println!("\n  --- Memórias Explícitas ---");
-    println!("  :remember <texto>        - Salva uma memória explicitamente no SQLite");
-    println!("  :memories                - Lista todas as memórias salvas explicitamente");
-    println!("  :forget <id>             - Remove uma memória explícita pelo ID");
-    println!("\n  --- Geral ---");
-    println!("  :kb [consulta]           - Lista ou busca runbooks na base técnica local");
-    println!("  :backend [ollama|neural [dir]] - Alterna entre Ollama (fallback) e ServerMind Neural próprio");
-    println!(
+    let _ = writeln!(
+        out,
+        "  :context                 - Exibe todas as mensagens da conversa ativa"
+    );
+    let _ = writeln!(out, "\n  --- Instruções do Assistente ---");
+    let _ = writeln!(
+        out,
+        "  :instructions            - Exibe as instruções atuais, regras de segurança e como personalizar"
+    );
+    let _ = writeln!(
+        out,
+        "  :instructions <texto>    - Define e persiste novas instruções personalizadas (máx. {} caracteres)",
+        MAX_INSTRUCTIONS_CHARS
+    );
+    let _ = writeln!(
+        out,
+        "  :instructions edit       - Abre prompt interativo para digitar novas instruções"
+    );
+    let _ = writeln!(
+        out,
+        "  :instructions reset      - Restaura as instruções padrão do assistente"
+    );
+    let _ = writeln!(out, "\n  --- Memórias Explícitas ---");
+    let _ = writeln!(
+        out,
+        "  :remember <texto>        - Salva uma memória explicitamente no SQLite"
+    );
+    let _ = writeln!(
+        out,
+        "  :memories                - Lista todas as memórias salvas explicitamente"
+    );
+    let _ = writeln!(
+        out,
+        "  :forget <id>             - Remove uma memória explícita pelo ID"
+    );
+    let _ = writeln!(out, "\n  --- Geral ---");
+    let _ = writeln!(
+        out,
+        "  :kb [consulta]           - Lista ou busca runbooks na base técnica local"
+    );
+    let _ = writeln!(
+        out,
+        "  :backend [ollama|neural [dir]] - Alterna entre Ollama (fallback) e ServerMind Neural próprio"
+    );
+    let _ = writeln!(
+        out,
         "  :hw                      - Inspeciona hardware, VRAM/Vulkan e benchmark de matmul CPU"
     );
-    println!(
-        "  :train [steps | marathon [6h]] - Treina o ServerMind Neural (ex.: `:train marathon 6h`)"
+    let _ = writeln!(
+        out,
+        "  :train [steps | marathon [6h]] - Treina o ServerMind Neural (padrão: {} passos; ex.: `:train marathon 6h`)",
+        DEFAULT_TRAIN_STEPS
     );
-    println!(
+    let _ = writeln!(
+        out,
         "  :exp                     - Exibe estatísticas da memória em 3 camadas (experiências)"
     );
-    println!(
+    let _ = writeln!(
+        out,
         "  :quantize <src> <dst> [fp16|bf16|int8|int4] - Exporta pacote quantizado compacto SMQ1"
     );
-    println!("  :help                    - Exibe esta mensagem de ajuda");
-    println!("  :quit                    - Encerra o programa com segurança");
-    println!("\n  --- Avaliação Offline (CLI) ---");
-    println!("  Para executar avaliações reprodutíveis sem acessar `servermind.db`,");
-    println!("  encerre o chat e execute no terminal: servermind-ai eval --help");
+    let _ = writeln!(
+        out,
+        "  :help                    - Exibe esta mensagem de ajuda"
+    );
+    let _ = writeln!(
+        out,
+        "  :quit                    - Encerra o programa com segurança"
+    );
+    let _ = writeln!(out, "\n  --- Avaliação Offline (CLI) ---");
+    let _ = writeln!(
+        out,
+        "  Para executar avaliações reprodutíveis sem acessar `servermind.db`,"
+    );
+    let _ = writeln!(
+        out,
+        "  encerre o chat e execute no terminal: servermind-ai eval --help"
+    );
 }
 
-fn handle_models_command(arg: &str, session: &mut AgentSession) {
+fn handle_models_command(
+    arg: &str,
+    session: &mut AgentSession,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) {
     if !arg.is_empty() {
         match session.select_installed_model(arg) {
             Ok(selected) => {
-                println!(
+                let _ = writeln!(
+                    out,
                     "Modelo ativo alterado para '{}' e persistido localmente (em '{}' e no SQLite).",
                     selected,
                     session.config().config_file_path
                 );
             }
-            Err(err) => {
-                eprintln!("\n[NÃO FOI POSSÍVEL TROCAR DE MODELO]\n{}", err);
+            Err(e) => {
+                let _ = writeln!(err, "\n[NÃO FOI POSSÍVEL TROCAR DE MODELO]\n{}", e);
             }
         }
         return;
     }
 
-    println!(
+    let _ = writeln!(
+        out,
         "\nModelo configurado atualmente: '{}'",
         session.config().model
     );
-    println!(
+    let _ = writeln!(
+        out,
         "Consultando modelos instalados no Ollama local ({})...",
         session.config().ollama_url
     );
 
     let installed = match session.list_installed_models() {
         Ok(list) => list,
-        Err(err) => {
-            eprintln!("\n[OLLAMA INDISPONÍVEL]\n{}", err);
+        Err(e) => {
+            let _ = writeln!(err, "\n[OLLAMA INDISPONÍVEL]\n{}", e);
             return;
         }
     };
 
     if installed.is_empty() {
-        eprintln!(
+        let _ = writeln!(
+            err,
             "\n[NENHUM MODELO INSTALADO]\n\
              O Ollama está respondendo em '{}', mas não há nenhum modelo instalado localmente.\n\
              O SERVERMIND AI não baixa modelos automaticamente.\n\
@@ -594,7 +743,7 @@ fn handle_models_command(arg: &str, session: &mut AgentSession) {
     let active_resolved =
         OllamaClient::resolve_installed_model(&session.config().model, &installed);
 
-    println!("\nModelos instalados localmente no Ollama:");
+    let _ = writeln!(out, "\nModelos instalados localmente no Ollama:");
     for (idx, model_name) in installed.iter().enumerate() {
         let is_active = active_resolved
             .as_deref()
@@ -602,128 +751,159 @@ fn handle_models_command(arg: &str, session: &mut AgentSession) {
             .unwrap_or_else(|| session.config().model.eq_ignore_ascii_case(model_name));
 
         let badge = if is_active { "* [ATIVO]" } else { "         " };
-        println!("  [{}] {} {}", idx + 1, badge, model_name);
+        let _ = writeln!(out, "  [{}] {} {}", idx + 1, badge, model_name);
     }
 
     if active_resolved.is_none() {
-        eprintln!(
+        let _ = writeln!(
+            err,
             "\nAviso: O modelo configurado '{}' não consta entre os instalados acima.",
             session.config().model
         );
     }
 
-    print!(
+    let _ = write!(
+        out,
         "\nDigite o número (1-{}) ou nome do modelo para ativá-lo (ou pressione Enter para manter '{}'): ",
         installed.len(),
         session.config().model
     );
-    let _ = io::stdout().flush();
+    let _ = out.flush();
 
-    match read_prompt_line() {
+    match read_prompt_line(input) {
         Ok(Some(choice)) => {
             let trimmed = choice.trim();
             if trimmed.is_empty() {
-                println!("Mantendo o modelo '{}'.", session.config().model);
+                let _ = writeln!(out, "Mantendo o modelo '{}'.", session.config().model);
             } else {
                 match session.select_installed_model(trimmed) {
                     Ok(selected) => {
-                        println!(
+                        let _ = writeln!(
+                            out,
                             "Modelo ativo alterado para '{}' e persistido localmente (em '{}' e no SQLite).",
                             selected,
                             session.config().config_file_path
                         );
                     }
-                    Err(err) => {
-                        eprintln!("\n[NÃO FOI POSSÍVEL TROCAR DE MODELO]\n{}", err);
+                    Err(e) => {
+                        let _ = writeln!(err, "\n[NÃO FOI POSSÍVEL TROCAR DE MODELO]\n{}", e);
                     }
                 }
             }
         }
-        Ok(None) => println!(
-            "\nEntrada encerrada. Mantendo o modelo '{}'.",
-            session.config().model
-        ),
-        Err(err) => eprintln!("\n{}", err),
+        Ok(None) => {
+            let _ = writeln!(
+                out,
+                "\nEntrada encerrada. Mantendo o modelo '{}'.",
+                session.config().model
+            );
+        }
+        Err(e) => {
+            let _ = writeln!(err, "\n{}", e);
+        }
     }
 }
 
-fn handle_history_command(arg: &str, session: &mut AgentSession) {
+fn handle_history_command(
+    arg: &str,
+    session: &mut AgentSession,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) {
     if !arg.is_empty() {
-        reopen_conversation_by_str(arg, session);
+        reopen_conversation_by_str(arg, session, out, err);
         return;
     }
 
     let list = match session.list_conversations(30) {
         Ok(convs) => convs,
-        Err(err) => {
-            eprintln!("Erro ao consultar histórico de conversas: {}", err);
+        Err(e) => {
+            let _ = writeln!(err, "Erro ao consultar histórico de conversas: {}", e);
             return;
         }
     };
 
     if list.is_empty() {
-        println!("Nenhuma conversa encontrada no banco de dados SQLite.");
+        let _ = writeln!(out, "Nenhuma conversa encontrada no banco de dados SQLite.");
         return;
     }
 
-    println!("\nConversas salvas localmente no SQLite:");
+    let _ = writeln!(out, "\nConversas salvas localmente no SQLite:");
     for c in &list {
         let marker = if c.id == session.current_conversation().id {
             "* [ATUAL]"
         } else {
             "         "
         };
-        println!(
+        let _ = writeln!(
+            out,
             "  #{} {} | {} | modelo: {} | {} msg(s) | {}",
             c.id, marker, c.created_at, c.model, c.message_count, c.title
         );
     }
 
-    print!(
+    let _ = write!(
+        out,
         "\nDigite o ID da conversa (ex: {}) para reabri-la (ou pressione Enter para permanecer na #{}): ",
         list.first().map(|c| c.id).unwrap_or(1),
         session.current_conversation().id
     );
-    let _ = io::stdout().flush();
+    let _ = out.flush();
 
-    match read_prompt_line() {
+    match read_prompt_line(input) {
         Ok(Some(selection)) => {
             let trimmed = selection.trim().trim_start_matches('#');
             if trimmed.is_empty() {
-                println!(
+                let _ = writeln!(
+                    out,
                     "Permanecendo na conversa atual (#{} - {}).",
                     session.current_conversation().id,
                     session.current_conversation().title
                 );
             } else {
-                reopen_conversation_by_str(trimmed, session);
+                reopen_conversation_by_str(trimmed, session, out, err);
             }
         }
-        Ok(None) => println!(
-            "\nEntrada encerrada. Permanecendo na conversa atual (#{}).",
-            session.current_conversation().id
-        ),
-        Err(err) => eprintln!("\n{}", err),
+        Ok(None) => {
+            let _ = writeln!(
+                out,
+                "\nEntrada encerrada. Permanecendo na conversa atual (#{}).",
+                session.current_conversation().id
+            );
+        }
+        Err(e) => {
+            let _ = writeln!(err, "\n{}", e);
+        }
     }
 }
 
-fn reopen_conversation_by_str(raw_id: &str, session: &mut AgentSession) {
+fn reopen_conversation_by_str(
+    raw_id: &str,
+    session: &mut AgentSession,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) {
     let cleaned = raw_id.trim().trim_start_matches('#');
     match cleaned.parse::<i64>() {
         Ok(id) if id > 0 => match session.load_conversation(id) {
             Ok(count) => {
-                println!(
+                let _ = writeln!(
+                    out,
                     "\nConversa #{} ('{}') reaberta com sucesso! {} mensagem(ns) restaurada(s) no contexto.",
                     id,
                     session.current_conversation().title,
                     count
                 );
-                print_current_conversation_messages(session);
+                print_current_conversation_messages(session, out);
             }
-            Err(err) => eprintln!("{}", err),
+            Err(e) => {
+                let _ = writeln!(err, "{}", e);
+            }
         },
         _ => {
-            eprintln!(
+            let _ = writeln!(
+                err,
                 "ID de conversa inválido: '{}'. Informe um número inteiro positivo (ex: `:history 1`).",
                 raw_id
             );
@@ -731,16 +911,18 @@ fn reopen_conversation_by_str(raw_id: &str, session: &mut AgentSession) {
     }
 }
 
-fn print_current_conversation_messages(session: &AgentSession) {
+fn print_current_conversation_messages(session: &AgentSession, out: &mut dyn Write) {
     let msgs = session.visible_messages();
     if msgs.is_empty() {
-        println!(
+        let _ = writeln!(
+            out,
             "A conversa atual (#{} - '{}') ainda não possui mensagens trocadas.",
             session.current_conversation().id,
             session.current_conversation().title
         );
     } else {
-        println!(
+        let _ = writeln!(
+            out,
             "\n--- Histórico da Conversa Ativa (#{} - {}) ---",
             session.current_conversation().id,
             session.current_conversation().title
@@ -751,13 +933,19 @@ fn print_current_conversation_messages(session: &AgentSession) {
                 Role::Assistant => "SERVERMIND AI",
                 Role::System => "Sistema",
             };
-            println!("\n[{}]\n{}", speaker, m.content);
+            let _ = writeln!(out, "\n[{}]\n{}", speaker, m.content);
         }
-        println!("----------------------------------------------");
+        let _ = writeln!(out, "----------------------------------------------");
     }
 }
 
-fn handle_instructions_command(arg: &str, session: &mut AgentSession) {
+fn handle_instructions_command(
+    arg: &str,
+    session: &mut AgentSession,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) {
     let trimmed = arg.trim();
 
     if trimmed.is_empty()
@@ -771,23 +959,33 @@ fn handle_instructions_command(arg: &str, session: &mut AgentSession) {
         };
         let char_len = session.custom_instructions().chars().count();
 
-        println!("\n=== CONFIGURAÇÃO DE INSTRUÇÕES DO ASSISTENTE ===");
-        println!(
+        let _ = writeln!(out, "\n=== CONFIGURAÇÃO DE INSTRUÇÕES DO ASSISTENTE ===");
+        let _ = writeln!(
+            out,
             "Estado atual : {} ({} / {} caracteres)",
             status_label, char_len, MAX_INSTRUCTIONS_CHARS
         );
-        println!("\n[1] Instruções personalizáveis ativas:");
-        println!("  {}", session.custom_instructions());
-        println!("\n[2] Identidade fixa de criação (sempre aplicada):");
-        println!("  {}", CREATOR_IDENTITY_INSTRUCTION);
-        println!("\n[3] Diretrizes de segurança imutáveis (sempre aplicadas):");
+        let _ = writeln!(out, "\n[1] Instruções personalizáveis ativas:");
+        let _ = writeln!(out, "  {}", session.custom_instructions());
+        let _ = writeln!(out, "\n[2] Identidade fixa de criação (sempre aplicada):");
+        let _ = writeln!(out, "  {}", CREATOR_IDENTITY_INSTRUCTION);
+        let _ = writeln!(
+            out,
+            "\n[3] Diretrizes de segurança imutáveis (sempre aplicadas):"
+        );
         for line in IMMUTABLE_SAFETY_INSTRUCTIONS.lines() {
-            println!("  {}", line);
+            let _ = writeln!(out, "  {}", line);
         }
-        println!("\nComo alterar ou restaurar:");
-        println!("  - Definir novas instruções : :instructions <suas instruções em português>");
-        println!("  - Editar interativamente   : :instructions edit");
-        println!("  - Voltar ao padrão original: :instructions reset  (ou /instrucoes padrao)");
+        let _ = writeln!(out, "\nComo alterar ou restaurar:");
+        let _ = writeln!(
+            out,
+            "  - Definir novas instruções : :instructions <suas instruções em português>"
+        );
+        let _ = writeln!(out, "  - Editar interativamente   : :instructions edit");
+        let _ = writeln!(
+            out,
+            "  - Voltar ao padrão original: :instructions reset  (ou /instrucoes padrao)"
+        );
         return;
     }
 
@@ -797,43 +995,57 @@ fn handle_instructions_command(arg: &str, session: &mut AgentSession) {
     ) {
         match session.reset_custom_instructions() {
             Ok(()) => {
-                println!(
+                let _ = writeln!(
+                    out,
                     "Instruções do assistente restauradas para o padrão original e salvas em '{}' e no SQLite.",
                     session.config().config_file_path
                 );
-                println!(
+                let _ = writeln!(
+                    out,
                     "As diretrizes de segurança (modo apenas conversacional) permanecem ativas."
                 );
             }
-            Err(err) => eprintln!("Erro ao restaurar instruções padrão: {}", err),
+            Err(e) => {
+                let _ = writeln!(err, "Erro ao restaurar instruções padrão: {}", e);
+            }
         }
         return;
     }
 
     if matches!(trimmed.to_lowercase().as_str(), "edit" | "editar" | "set") {
-        println!(
+        let _ = writeln!(
+            out,
             "\nDigite as novas instruções para o assistente (máximo de {} caracteres).",
             MAX_INSTRUCTIONS_CHARS
         );
-        println!("Dica: Para cancelar, deixe em branco e pressione Enter. Para voltar ao padrão, use `:instructions reset`.");
-        print!("Novas instruções > ");
-        let _ = io::stdout().flush();
+        let _ = writeln!(
+            out,
+            "Dica: Para cancelar, deixe em branco e pressione Enter. Para voltar ao padrão, use `:instructions reset`."
+        );
+        let _ = write!(out, "Novas instruções > ");
+        let _ = out.flush();
 
-        match read_prompt_line() {
+        match read_prompt_line(input) {
             Ok(Some(new_text)) => {
                 let input_clean = new_text.trim();
                 if input_clean.is_empty() {
-                    println!(
+                    let _ = writeln!(
+                        out,
                         "Edição cancelada. As instruções atuais foram mantidas. (Use `:instructions reset` se desejar voltar ao padrão)."
                     );
                     return;
                 }
-                apply_new_instructions(input_clean, session);
+                apply_new_instructions(input_clean, session, out, err);
             }
-            Ok(None) => println!(
-                "\nEdição cancelada (entrada encerrada). As instruções atuais foram mantidas."
-            ),
-            Err(err) => eprintln!("\n{}", err),
+            Ok(None) => {
+                let _ = writeln!(
+                    out,
+                    "\nEdição cancelada (entrada encerrada). As instruções atuais foram mantidas."
+                );
+            }
+            Err(e) => {
+                let _ = writeln!(err, "\n{}", e);
+            }
         }
         return;
     }
@@ -848,68 +1060,110 @@ fn handle_instructions_command(arg: &str, session: &mut AgentSession) {
         _ => trimmed,
     };
 
-    apply_new_instructions(text_to_set, session);
+    apply_new_instructions(text_to_set, session, out, err);
 }
 
-fn apply_new_instructions(text: &str, session: &mut AgentSession) {
+fn apply_new_instructions(
+    text: &str,
+    session: &mut AgentSession,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) {
     match session.set_custom_instructions(text) {
         Ok(()) => {
-            println!(
+            let _ = writeln!(
+                out,
                 "\nInstruções personalizadas atualizadas e salvas localmente em '{}' e no SQLite!",
                 session.config().config_file_path
             );
-            println!("  Novas instruções: \"{}\"", session.custom_instructions());
-            println!("  Nota de segurança: O agente permanece estritamente conversacional e sem executar comandos.");
-            println!("  Para voltar às instruções padrão a qualquer momento, execute: :instructions reset");
+            let _ = writeln!(
+                out,
+                "  Novas instruções: \"{}\"",
+                session.custom_instructions()
+            );
+            let _ = writeln!(
+                out,
+                "  Nota de segurança: O agente permanece estritamente conversacional e sem executar comandos."
+            );
+            let _ = writeln!(
+                out,
+                "  Para voltar às instruções padrão a qualquer momento, execute: :instructions reset"
+            );
         }
-        Err(err) => {
-            eprintln!("\n[INSTRUÇÕES INVÁLIDAS]\n{}", err);
+        Err(e) => {
+            let _ = writeln!(err, "\n[INSTRUÇÕES INVÁLIDAS]\n{}", e);
         }
     }
 }
 
-fn handle_kb_command(arg: &str) {
+fn handle_kb_command(arg: &str, session: &AgentSession, out: &mut dyn Write) {
+    let base_dir = session.config().config_dir();
     let query = arg.trim();
     if query.is_empty() {
-        let entries = crate::chat::knowledge::load_kb_entries();
-        println!(
+        let entries = crate::chat::knowledge::load_kb_entries_from_dir(&base_dir);
+        let _ = writeln!(
+            out,
             "\nBase técnica local ({} runbooks em '{}'):",
             entries.len(),
-            crate::chat::knowledge::DEFAULT_KB_RELATIVE_PATH
+            base_dir
+                .join(crate::chat::knowledge::DEFAULT_KB_RELATIVE_PATH)
+                .display()
         );
         for entry in entries {
-            println!("  - [{}] {} — {}", entry.id, entry.title, entry.summary);
+            let _ = writeln!(
+                out,
+                "  - [{}] {} — {}",
+                entry.id, entry.title, entry.summary
+            );
         }
-        println!("Dica: use `:kb <termo>` para testar a recuperação ou edite o JSON para expandir o estudo.");
+        let _ = writeln!(
+            out,
+            "Dica: use `:kb <termo>` para testar a recuperação ou edite o JSON para expandir o estudo."
+        );
         return;
     }
 
-    let hits = crate::chat::knowledge::retrieve_relevant_notes(query, 3);
+    let hits = crate::chat::knowledge::retrieve_relevant_notes_from_dir(&base_dir, query, 3);
     if hits.is_empty() {
-        println!(
+        let _ = writeln!(
+            out,
             "\nNenhum runbook atingiu relevância mínima para '{}'. Use `:kb` para listar todos.",
             query
         );
         return;
     }
-    println!("\nRunbooks recuperados para '{}':", query);
+    let _ = writeln!(out, "\nRunbooks recuperados para '{}':", query);
     for hit in hits {
-        println!(
+        let _ = writeln!(
+            out,
             "  [score={}] {} ({})",
             hit.score, hit.entry.title, hit.entry.id
         );
         for line in &hit.entry.guidance {
-            println!("    {}", line);
+            let _ = writeln!(out, "    {}", line);
         }
     }
 }
 
-fn handle_memories_command(arg: &str, session: &mut AgentSession) {
+fn handle_memories_command(
+    arg: &str,
+    session: &mut AgentSession,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) {
     let trimmed = arg.trim();
     if let Some(rest) = trimmed.strip_prefix("add ") {
         match session.add_explicit_memory(rest) {
-            Ok(mem) => println!("Memória explícita #{} salva: \"{}\"", mem.id, mem.content),
-            Err(err) => eprintln!("Erro ao salvar memória: {}", err),
+            Ok(mem) => {
+                let _ = writeln!(
+                    out,
+                    "Memória explícita #{} salva: \"{}\"",
+                    mem.id, mem.content
+                );
+            }
+            Err(e) => {
+                let _ = writeln!(err, "Erro ao salvar memória: {}", e);
+            }
         }
         return;
     }
@@ -917,24 +1171,28 @@ fn handle_memories_command(arg: &str, session: &mut AgentSession) {
     match session.list_memories() {
         Ok(list) => {
             if list.is_empty() {
-                println!(
+                let _ = writeln!(
+                    out,
                     "Nenhuma memória explícita salva. Use `:remember <texto>` para salvar uma informação importante."
                 );
             } else {
-                println!("\nMemórias explícitas salvas localmente no SQLite:");
+                let _ = writeln!(out, "\nMemórias explícitas salvas localmente no SQLite:");
                 for m in list {
-                    println!("  #{} [{}] {}", m.id, m.created_at, m.content);
+                    let _ = writeln!(out, "  #{} [{}] {}", m.id, m.created_at, m.content);
                 }
-                println!(
+                let _ = writeln!(
+                    out,
                     "Dica: Use `:remember <texto>` para adicionar ou `:forget <id>` para remover."
                 );
             }
         }
-        Err(err) => eprintln!("Erro ao listar memórias: {}", err),
+        Err(e) => {
+            let _ = writeln!(err, "Erro ao listar memórias: {}", e);
+        }
     }
 }
 
-fn resolve_default_neural_checkpoint_dir() -> &'static str {
+fn resolve_default_neural_checkpoint_dir(base_dir: &std::path::Path) -> std::path::PathBuf {
     const CANDIDATES: &[&str] = &[
         "checkpoints/servermind-neural-110m-int8",
         "checkpoints/servermind-neural-110m",
@@ -947,63 +1205,79 @@ fn resolve_default_neural_checkpoint_dir() -> &'static str {
         "checkpoints/servermind-neural-v1",
     ];
     for dir in CANDIDATES {
-        let p = std::path::Path::new(dir);
+        let p = base_dir.join(dir);
         if p.join("tokenizer.json").is_file()
             && (p.join("best.bin").is_file()
                 || p.join("quantized.smq").is_file()
                 || p.join("latest.bin").is_file())
         {
-            return dir;
+            return p;
         }
     }
-    "checkpoints/servermind-neural-v1"
+    base_dir.join("checkpoints/servermind-neural-v1")
 }
 
-fn handle_backend_command(arg: &str, session: &mut AgentSession) {
+fn handle_backend_command(
+    arg: &str,
+    session: &mut AgentSession,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) {
+    let base_dir = session.config().config_dir();
+    let default_dir = resolve_default_neural_checkpoint_dir(&base_dir);
     let trimmed = arg.trim();
     if trimmed.is_empty() {
-        println!("Backend ativo: {}", session.backend_kind().as_str());
-        println!(
+        let _ = writeln!(out, "Backend ativo: {}", session.backend_kind().as_str());
+        let _ = writeln!(
+            out,
             "Uso: :backend ollama  |  :backend neural [diretorio_checkpoint] (padrão detectado: '{}')",
-            resolve_default_neural_checkpoint_dir()
+            default_dir.display()
         );
         return;
     }
     let mut parts = trimmed.splitn(2, char::is_whitespace);
     let kind_str = parts.next().unwrap_or("");
-    let default_dir = resolve_default_neural_checkpoint_dir();
-    let dir_str = parts
+    let resolved_dir = parts
         .next()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
+        .map(|s| session.config().resolve_path(s))
         .unwrap_or(default_dir);
 
     match crate::neural::inference::InferenceBackendKind::parse(kind_str) {
         Ok(crate::neural::inference::InferenceBackendKind::Ollama) => {
             session.use_ollama_backend();
-            println!("Backend alterado para 'ollama' (fallback local preservado).");
+            let _ = writeln!(
+                out,
+                "Backend alterado para 'ollama' (fallback local preservado)."
+            );
         }
         Ok(crate::neural::inference::InferenceBackendKind::ServerMindNeural) => {
-            match session.use_neural_backend(std::path::Path::new(dir_str)) {
+            match session.use_neural_backend(&resolved_dir) {
                 Ok((step, best_val)) => {
-                    println!(
+                    let _ = writeln!(
+                        out,
                         "Backend alterado para 'neural' (ServerMind Neural próprio | dir='{}' | step={} | best_val_loss={:.4}).",
-                        dir_str, step, best_val
+                        resolved_dir.display(),
+                        step,
+                        best_val
                     );
                 }
-                Err(err) => {
-                    eprintln!("[ERRO AO CARREGAR BACKEND NEURAL]\n{}", err);
+                Err(e) => {
+                    let _ = writeln!(err, "[ERRO AO CARREGAR BACKEND NEURAL]\n{}", e);
                 }
             }
         }
-        Err(err) => eprintln!("{}", err),
+        Err(e) => {
+            let _ = writeln!(err, "{}", e);
+        }
     }
 }
 
-fn handle_train_command(arg: &str) {
+fn handle_train_command(arg: &str, out: &mut dyn Write, err: &mut dyn Write) {
     let trimmed = arg.trim();
     let args: Vec<String> = if trimmed.is_empty() {
-        vec!["--steps".to_string(), "60".to_string()]
+        vec!["--steps".to_string(), DEFAULT_TRAIN_STEPS.to_string()]
     } else {
         let toks: Vec<&str> = trimmed.split_whitespace().collect();
         if toks[0].eq_ignore_ascii_case("marathon") || toks[0].eq_ignore_ascii_case("maratona") {
@@ -1019,16 +1293,12 @@ fn handle_train_command(arg: &str) {
             toks.into_iter().map(|s| s.to_string()).collect()
         }
     };
-    let mut out = io::stdout();
-    let mut err = io::stderr();
-    let _ = run_train_neural_cli(&args, &mut out, &mut err);
+    let _ = run_train_neural_cli(&args, out, err);
 }
 
-fn handle_exp_command(arg: &str) {
-    let db_path = std::path::Path::new("servermind_experiences.db");
-    let mut out = io::stdout();
-    let mut err = io::stderr();
-    handle_exp_command_with_io(arg, db_path, &mut out, &mut err);
+fn handle_exp_command(arg: &str, session: &AgentSession, out: &mut dyn Write, err: &mut dyn Write) {
+    let db_path = session.config().resolve_path("servermind_experiences.db");
+    handle_exp_command_with_io(arg, &db_path, out, err);
 }
 
 pub(crate) fn handle_exp_command_with_io(
@@ -1153,15 +1423,25 @@ pub(crate) fn handle_exp_command_with_io(
             }
         }
         "export" => {
+            let anchor = db_path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(crate::chat::config::AppConfig::resolve_active_config_dir);
             let out_path = if rest.is_empty() {
-                std::path::Path::new("datasets/experiences_approved.jsonl")
+                anchor.join("datasets/experiences_approved.jsonl")
             } else {
-                std::path::Path::new(rest)
+                let p = std::path::Path::new(rest);
+                if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    anchor.join(p)
+                }
             };
             if let Some(parent) = out_path.parent().filter(|p| !p.as_os_str().is_empty()) {
                 let _ = std::fs::create_dir_all(parent);
             }
-            match store.export_approved_jsonl(out_path, None) {
+            match store.export_approved_jsonl(&out_path, None) {
                 Ok(n) => {
                     let _ = writeln!(
                         out,
@@ -1200,5 +1480,241 @@ pub(crate) fn handle_exp_command_with_io(
                 sub
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chat::config::AppConfig;
+    use crate::chat::storage::Storage;
+    use crate::test_support::{
+        lock_env_cwd, CurrentDirGuard, EnvVarGuard, MockChatAction, MockOllamaServer, TempDirGuard,
+    };
+    use std::fs;
+    use std::io::Cursor;
+
+    fn build_session_in_dir(dir: &std::path::Path, ollama_url: &str) -> AgentSession {
+        let cfg_path = dir.join("config.toml");
+        let content = format!(
+            "ollama_url = \"{}\"\n\
+             model = \"llama3.2\"\n\
+             database_path = \"sessao_repl.db\"\n\
+             request_timeout_secs = 10\n",
+            ollama_url
+        );
+        fs::write(&cfg_path, content).expect("deve gravar config.toml");
+        let cfg = AppConfig::load_with_overrides(dir, dir, None, None, None, None, None)
+            .expect("deve carregar config");
+        let storage = Storage::new(&cfg.database_path).expect("deve abrir sqlite");
+        let ollama =
+            OllamaClient::new(cfg.ollama_url.clone(), cfg.request_timeout_secs).expect("client");
+        AgentSession::new(cfg, storage, ollama).expect("deve criar AgentSession")
+    }
+
+    #[test]
+    fn test_phase2_t5_repl_writer_injected_commands_unknown_and_unix_paths() {
+        let temp = TempDirGuard::new("t5_repl_io");
+        let tags_json = serde_json::json!({
+            "models": [{ "name": "llama3.2:latest", "model": "llama3.2:latest" }]
+        })
+        .to_string();
+        let mock = MockOllamaServer::start(
+            tags_json,
+            vec![MockChatAction::Ok(
+                "Inspecione `/var/log/nginx/error.log` com `tail -n 50` em modo somente leitura.",
+            )],
+            None,
+        );
+        let mut session = build_session_in_dir(&temp.path, &mock.base_url);
+
+        let script = "\
+:help\n\
+/ajuda\n\
+:comando_inexistente_xyz\n\
+/var/log/nginx/error.log está enchendo o disco, como inspecionar?\n\
+:remember Servidor usa Debian 12\n\
+:memories\n\
+:context\n\
+:new\n\
+:quit\n";
+        let mut input = Cursor::new(script.as_bytes());
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+
+        run_terminal_loop_with_io(&mut session, &mut input, &mut out, &mut err, false);
+
+        let stdout_str = String::from_utf8_lossy(&out);
+        let stderr_str = String::from_utf8_lossy(&err);
+
+        // B9: banner sem "Fase 0" e help exibindo o default unificado de 80 passos
+        assert!(
+            !stdout_str.contains("Fase 0"),
+            "banner não deve mais exibir 'Fase 0': {}",
+            stdout_str
+        );
+        assert!(
+            stdout_str.contains("padrão: 80 passos"),
+            "help deve documentar o default unificado de 80 passos: {}",
+            stdout_str
+        );
+        assert_eq!(
+            stdout_str
+                .matches("Comandos disponíveis (aceitam prefixo ':' ou '/'):")
+                .count(),
+            2,
+            ":help e /ajuda devem imprimir a ajuda duas vezes"
+        );
+
+        // Comando desconhecido com `:` emite aviso claro em stderr sem derrubar o loop
+        assert!(
+            stderr_str.contains("Comando desconhecido: ':comando_inexistente_xyz'"),
+            "stderr deveria acusar comando desconhecido, obtido: {}",
+            stderr_str
+        );
+
+        // A4 + T5: `/var/log/nginx/error.log ...` foi encaminhado ao chat (1 POST /api/chat), não tratado como comando!
+        assert!(
+            stdout_str.contains("tail -n 50"),
+            "mensagem iniciada por /var/log deveria ter sido respondida pelo chat: {}",
+            stdout_str
+        );
+        let chat_posts = mock
+            .captured
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|req| req.starts_with("POST /api/chat"))
+            .count();
+        assert_eq!(
+            chat_posts, 1,
+            "exatamente 1 chamada de chat esperada (para /var/log), obtido {}",
+            chat_posts
+        );
+
+        // `:remember`, `:memories`, `:context`, `:new`, `:quit` funcionaram nos writers injetados
+        assert!(stdout_str.contains("Memória explícita #1 salva"));
+        assert!(stdout_str.contains("Debian 12"));
+        assert!(stdout_str.contains("Histórico da Conversa Ativa"));
+        assert!(stdout_str.contains("Nova conversa separada iniciada"));
+        assert!(stdout_str.contains("Encerrando SERVERMIND AI. Histórico e configurações salvos"));
+    }
+
+    #[test]
+    fn test_phase2_b8_paths_resolve_from_config_dir_regardless_of_cwd() {
+        let _lock = lock_env_cwd();
+        let cfg_root = TempDirGuard::new("b8_cfg_root");
+        let empty_cwd = TempDirGuard::new("b8_empty_cwd");
+        let _env = EnvVarGuard::capture(&["SERVERMIND_CONFIG"]);
+
+        // 1. Prepara `knowledge/sysadmin_kb.json` customizado e checkpoint neural dentro de `cfg_root`
+        let kb_dir = cfg_root.path.join("knowledge");
+        fs::create_dir_all(&kb_dir).unwrap();
+        fs::write(
+            kb_dir.join("sysadmin_kb.json"),
+            r#"[{
+                "id": "kb-b8-canary",
+                "title": "Runbook Canário B8",
+                "tags": ["canaryb8", "nginx"],
+                "summary": "Valida resolução pelo diretório da config",
+                "guidance": ["Sempre resolver pelo diretório da config."]
+            }]"#,
+        )
+        .unwrap();
+
+        let ckpt_dir = cfg_root.path.join("checkpoints/servermind-neural-v1");
+        fs::create_dir_all(&ckpt_dir).unwrap();
+        let corpus = ["<user> Olá <assistant> Olá! Posso ajudar no servidor."];
+        let tok = crate::neural::tokenizer::BpeTokenizer::train_from_corpus(&corpus, 280);
+        tok.save(&ckpt_dir.join("tokenizer.json")).unwrap();
+        let tcfg = crate::neural::TransformerConfig {
+            vocab_size: tok.vocab_size(),
+            max_seq_len: 16,
+            d_model: 16,
+            n_heads: 2,
+            n_layers: 1,
+            d_ff: 32,
+        };
+        let model = crate::neural::ServerMindTransformer::new_random(tcfg, 11).unwrap();
+        crate::neural::save_checkpoint(&ckpt_dir.join("best.bin"), &model, None, 3, 1.8).unwrap();
+
+        let mock = MockOllamaServer::from_replies(vec![]);
+        let mut session = build_session_in_dir(&cfg_root.path, &mock.base_url);
+        std::env::set_var("SERVERMIND_CONFIG", cfg_root.path.join("config.toml"));
+
+        // 2. Entra em um CWD completamente vazio e diferente de `cfg_root`!
+        let _cwd = CurrentDirGuard::enter(&empty_cwd.path);
+
+        let mut input = Cursor::new(b"" as &[u8]);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+
+        assert!(!handle_command_with_io(
+            ":kb",
+            &mut session,
+            &mut input,
+            &mut out,
+            &mut err
+        ));
+        assert!(!handle_command_with_io(
+            ":backend neural",
+            &mut session,
+            &mut input,
+            &mut out,
+            &mut err
+        ));
+        assert!(!handle_command_with_io(
+            ":exp add linux | Uso alto de CPU no host | Worker travado em loop | Reiniciar unidade systemd com cautela | resolved",
+            &mut session,
+            &mut input,
+            &mut out,
+            &mut err
+        ));
+        assert!(!handle_command_with_io(
+            ":exp approve 1",
+            &mut session,
+            &mut input,
+            &mut out,
+            &mut err
+        ));
+        assert!(!handle_command_with_io(
+            ":exp export",
+            &mut session,
+            &mut input,
+            &mut out,
+            &mut err
+        ));
+
+        let stdout_str = String::from_utf8_lossy(&out);
+        let stderr_str = String::from_utf8_lossy(&err);
+        assert!(stderr_str.is_empty(), "stderr inesperado: {}", stderr_str);
+        assert!(
+            stdout_str.contains("kb-b8-canary"),
+            ":kb deveria carregar sysadmin_kb.json de cfg_root: {}",
+            stdout_str
+        );
+        assert!(
+            stdout_str.contains("Backend alterado para 'neural'"),
+            ":backend neural deveria encontrar checkpoints em cfg_root: {}",
+            stdout_str
+        );
+        assert!(
+            cfg_root.path.join("servermind_experiences.db").is_file(),
+            "servermind_experiences.db deveria ser gravado em cfg_root!"
+        );
+        assert!(
+            cfg_root
+                .path
+                .join("datasets/experiences_approved.jsonl")
+                .is_file(),
+            "experiences_approved.jsonl deveria ser exportado em cfg_root!"
+        );
+
+        let cwd_entries: Vec<_> = fs::read_dir(&empty_cwd.path).unwrap().collect();
+        assert!(
+            cwd_entries.is_empty(),
+            "nenhum arquivo deveria ser criado no CWD externo, encontrado: {:?}",
+            cwd_entries
+        );
     }
 }

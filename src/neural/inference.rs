@@ -194,7 +194,7 @@ impl NeuralEngine {
             .saturating_add(prefill_scratch_bytes_for(&self.model.config))
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn generate_reply(
         &self,
         user_prompt: &str,
@@ -205,6 +205,7 @@ impl NeuralEngine {
         self.generate_reply_with_context(&[], user_prompt, max_new_tokens, temperature, top_k)
     }
 
+    #[cfg(test)]
     pub fn generate_reply_with_context(
         &self,
         request_messages: &[Message],

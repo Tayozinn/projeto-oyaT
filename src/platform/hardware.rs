@@ -213,7 +213,7 @@ pub fn probe_hardware() -> HardwareProfile {
 
 /// Estima parâmetros e consumo real de memória (pesos f32 + grads + AdamW m/v + LayerCache + temporários)
 /// de um Transformer Decoder-only, incluindo indicadores para 8 GB RAM (inferência) e 8 GB VRAM (RX 7600).
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub fn estimate_transformer_memory(
     vocab_size: usize,
     max_seq_len: usize,

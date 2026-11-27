@@ -111,6 +111,57 @@ impl AppConfig {
         env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     }
 
+    /// Retorna o diretório base associado ao `config_file_path` desta instância (`B8`),
+    /// garantindo que caminhos relativos da sessão não dependam do `CWD`.
+    pub fn config_dir(&self) -> PathBuf {
+        Path::new(&self.config_file_path)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(Self::resolve_default_base_dir)
+    }
+
+    /// Resolve um caminho relativo contra `self.config_dir()` (mantendo absolutos intactos).
+    pub fn resolve_path(&self, path: impl AsRef<Path>) -> PathBuf {
+        let p = path.as_ref();
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            self.config_dir().join(p)
+        }
+    }
+
+    /// Determina o diretório de configuração ativo para comandos CLI fora de uma `AgentSession`:
+    /// usa o diretório pai de `SERVERMIND_CONFIG` quando definido, ou `resolve_default_base_dir()`.
+    pub fn resolve_active_config_dir() -> PathBuf {
+        if let Ok(Some(raw_cfg)) = Self::read_env_var("SERVERMIND_CONFIG") {
+            let trimmed = raw_cfg.trim();
+            if !trimmed.is_empty() {
+                let cwd = env::current_dir().unwrap_or_else(|_| Self::resolve_default_base_dir());
+                let cfg_path = if Path::new(trimmed).is_absolute() {
+                    PathBuf::from(trimmed)
+                } else {
+                    cwd.join(trimmed)
+                };
+                if let Some(parent) = cfg_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                    return parent.to_path_buf();
+                }
+                return cwd;
+            }
+        }
+        Self::resolve_default_base_dir()
+    }
+
+    /// Resolve um caminho relativo padrão contra `resolve_active_config_dir()` (`B8`).
+    pub fn resolve_from_config_dir(path: impl AsRef<Path>) -> PathBuf {
+        let p = path.as_ref();
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            Self::resolve_active_config_dir().join(p)
+        }
+    }
+
     fn read_env_var(name: &str) -> Result<Option<String>, String> {
         match env::var(name) {
             Ok(val) => Ok(Some(val)),

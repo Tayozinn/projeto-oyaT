@@ -318,27 +318,6 @@ impl Storage {
         })
     }
 
-    /// Atualiza o título de uma conversa (por exemplo, a partir da primeira pergunta do usuário).
-    #[allow(dead_code)]
-    pub fn update_conversation_title(
-        &self,
-        conversation_id: i64,
-        title: &str,
-    ) -> Result<(), String> {
-        self.conn
-            .execute(
-                "UPDATE conversations SET title = ?1 WHERE id = ?2",
-                params![title, conversation_id],
-            )
-            .map_err(|e| {
-                self.err(
-                    &format!("atualizar título da conversa #{}", conversation_id),
-                    &e,
-                )
-            })?;
-        Ok(())
-    }
-
     /// Atualiza o modelo associado à conversa atual.
     pub fn update_conversation_model(
         &self,
@@ -435,7 +414,7 @@ impl Storage {
     }
 
     /// Salva uma mensagem vinculada a uma conversa no SQLite.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn save_message(
         &self,
         conversation_id: i64,

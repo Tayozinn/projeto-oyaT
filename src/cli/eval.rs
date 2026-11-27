@@ -985,3 +985,169 @@ fn print_eval_run_summary<W: Write>(out: &mut W, outcome: &EvalRunOutcome) {
         "Aviso             : Avaliação estritamente consultiva; notas não garantem correção nem alteram modelos/pesos."
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn to_vec(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn test_phase2_t4_eval_list_cases_parser_table() {
+        // Casos válidos (espaço, inline `=`, CSV e repetição)
+        let p_empty = parse_list_cases_args(&to_vec(&[])).expect("sem args é válido");
+        assert!(p_empty.dataset.is_none());
+        assert!(p_empty.categories.is_empty());
+        assert!(p_empty.case_ids.is_empty());
+        assert!(!p_empty.help_requested);
+
+        let p_full = parse_list_cases_args(&to_vec(&[
+            "--dataset=eval/cases_v1.json",
+            "--category",
+            "explicacao_conceitos,fora_de_escopo",
+            "--case",
+            "exp-01,inc-01",
+            "--case=dst-01",
+        ]))
+        .expect("combinação válida em list-cases");
+        assert_eq!(p_full.dataset, Some(PathBuf::from("eval/cases_v1.json")));
+        assert_eq!(p_full.categories.len(), 2);
+        assert_eq!(p_full.case_ids, vec!["exp-01", "inc-01", "dst-01"]);
+
+        let p_help = parse_list_cases_args(&to_vec(&["-h"])).expect("-h válido");
+        assert!(p_help.help_requested);
+
+        // Tabela de entradas inválidas
+        let invalid_table: &[(&[&str], &str)] = &[
+            (&["--help=1"], "--help"),
+            (&["--dataset"], "--dataset"),
+            (
+                &["--dataset", "a.json", "--dataset", "b.json"],
+                "mais de uma vez",
+            ),
+            (&["--category", ""], "--category"),
+            (&["--category", "explicacao_conceitos,"], "--category"),
+            (&["--category", "invalida"], "Categoria"),
+            (&["--case", ""], "--case"),
+            (&["--case", "exp-01, ,inc-01"], "--case"),
+            (&["posicional_solto"], "posicional inesperado"),
+            (&["--flag-desconhecida"], "desconhecida"),
+        ];
+        for (raw, expected_substr) in invalid_table {
+            let err = parse_list_cases_args(&to_vec(raw))
+                .err()
+                .unwrap_or_else(|| panic!("deveria rejeitar {:?}", raw));
+            assert!(
+                err.contains(expected_substr),
+                "para {:?} esperava '{}' em '{}'",
+                raw,
+                expected_substr,
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn test_phase2_t4_eval_list_models_parser_table() {
+        let p_ok = parse_list_models_args(&to_vec(&[
+            "--ollama-url=http://localhost:11434",
+            "--timeout-secs",
+            "15",
+        ]))
+        .expect("list-models válido");
+        assert_eq!(p_ok.ollama_url.as_deref(), Some("http://localhost:11434"));
+        assert_eq!(p_ok.timeout_secs, Some(15));
+
+        let invalid_table: &[(&[&str], &str)] = &[
+            (&["--help=sim"], "--help"),
+            (&["--ollama-url"], "--ollama-url"),
+            (&["--ollama-url", "http://10.0.0.8:11434"], "loopback"),
+            (
+                &[
+                    "--ollama-url",
+                    "http://127.0.0.1:11434",
+                    "--ollama-url",
+                    "http://localhost:11434",
+                ],
+                "mais de uma vez",
+            ),
+            (&["--timeout-secs", "0"], "--timeout-secs"),
+            (&["--timeout-secs", "abc"], "--timeout-secs"),
+            (
+                &["--timeout-secs", "5", "--timeout-secs", "10"],
+                "mais de uma vez",
+            ),
+            (&["extra"], "posicional inesperado"),
+        ];
+        for (raw, expected_substr) in invalid_table {
+            let err = parse_list_models_args(&to_vec(raw))
+                .err()
+                .unwrap_or_else(|| panic!("deveria rejeitar {:?}", raw));
+            assert!(
+                err.contains(expected_substr),
+                "para {:?} esperava '{}' em '{}'",
+                raw,
+                expected_substr,
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn test_phase2_t4_eval_run_parser_table() {
+        let p = parse_eval_run_args(&to_vec(&[
+            "--model",
+            "qwen2.5:7b",
+            "--dataset=eval/cases_v1.json",
+            "--category=explicacao_conceitos",
+            "--case=exp-01",
+            "--limit=5",
+            "--out-dir",
+            "out_custom",
+            "--timeout-secs=45",
+            "--max-duration=1h30m",
+            "--repeat=3",
+            "--judge-model=llama3.2",
+            "--ollama-url=http://[::1]:11434",
+            "--with-kb",
+        ]))
+        .expect("eval run completo válido");
+        assert_eq!(p.model.as_deref(), Some("qwen2.5:7b"));
+        assert_eq!(p.limit, Some(5));
+        assert_eq!(p.timeout_secs, Some(45));
+        assert_eq!(p.max_duration, Some(Duration::from_secs(5400)));
+        assert_eq!(p.repeat, Some(3));
+        assert_eq!(p.judge_model.as_deref(), Some("llama3.2"));
+        assert!(p.with_kb);
+
+        let invalid_table: &[(&[&str], &str)] = &[
+            (&["--with-kb=true"], "--with-kb"),
+            (&["--help=true"], "--help"),
+            (&["--limit", "0"], "--limit"),
+            (&["--limit", "-2"], "--limit"),
+            (&["--limit", "2", "--limit", "3"], "mais de uma vez"),
+            (&["--repeat", "0"], "--repeat"),
+            (&["--repeat", "21"], "20"),
+            (&["--max-duration", "0s"], "maior que zero"),
+            (&["--max-duration", "999h"], "limite"),
+            (&["--ollama-url", "https://api.openai.com"], "loopback"),
+            (&["--model"], "--model"),
+            (&["--judge-model", "   "], "vazio"),
+            (&["arg_solto"], "posicional inesperado"),
+        ];
+        for (raw, expected_substr) in invalid_table {
+            let err = parse_eval_run_args(&to_vec(raw))
+                .err()
+                .unwrap_or_else(|| panic!("deveria rejeitar {:?}", raw));
+            assert!(
+                err.to_lowercase().contains(&expected_substr.to_lowercase()),
+                "para {:?} esperava '{}' em '{}'",
+                raw,
+                expected_substr,
+                err
+            );
+        }
+    }
+}

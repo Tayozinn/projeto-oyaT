@@ -284,7 +284,7 @@ impl AgentSession {
 
     /// Envia uma mensagem comum do administrador ao modelo ativo no Ollama, mantendo o contexto
     /// da conversa atual e salvando apenas as mensagens da conversa no SQLite (nunca salva memórias implicitamente).
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn send_user_message(&mut self, user_input: &str) -> Result<String, String> {
         self.send_user_message_inner(user_input, None)
     }
@@ -339,7 +339,11 @@ impl AgentSession {
         for msg in non_system.into_iter().skip(skip) {
             request_messages.push(msg.clone());
         }
-        let kb_hits = crate::chat::knowledge::retrieve_relevant_notes(trimmed, 2);
+        let kb_hits = crate::chat::knowledge::retrieve_relevant_notes_from_dir(
+            &self.config.config_dir(),
+            trimmed,
+            2,
+        );
         if let Some(grounding) = crate::chat::knowledge::format_grounding_note(&kb_hits) {
             request_messages.push(Message::new(Role::System, grounding));
         }

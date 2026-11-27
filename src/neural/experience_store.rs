@@ -96,7 +96,7 @@ impl ExperienceStore {
         Ok(store)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn in_memory() -> Result<Self, String> {
         let conn = Connection::open_in_memory()
             .map_err(|e| format!("Falha ao abrir ExperienceStore em memória: {}", e))?;

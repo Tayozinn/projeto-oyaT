@@ -31,11 +31,11 @@ pub struct KbHit {
     pub score: usize,
 }
 
-/// Carrega a base técnica local de `knowledge/sysadmin_kb.json` quando presente no diretório
-/// de trabalho, ou usa a cópia embutida no binário para funcionar de qualquer pasta.
-pub fn load_kb_entries() -> Vec<KbEntry> {
-    let path = Path::new(DEFAULT_KB_RELATIVE_PATH);
-    if let Ok(raw) = fs::read_to_string(path) {
+/// Carrega a base técnica local de `<base_dir>/knowledge/sysadmin_kb.json` quando presente,
+/// ou usa a cópia embutida no binário para funcionar de qualquer pasta (`B8`).
+pub fn load_kb_entries_from_dir(base_dir: &Path) -> Vec<KbEntry> {
+    let path = base_dir.join(DEFAULT_KB_RELATIVE_PATH);
+    if let Ok(raw) = fs::read_to_string(&path) {
         if let Ok(parsed) = serde_json::from_str::<Vec<KbEntry>>(&raw) {
             if !parsed.is_empty() {
                 return parsed;
@@ -45,13 +45,25 @@ pub fn load_kb_entries() -> Vec<KbEntry> {
     serde_json::from_str::<Vec<KbEntry>>(EMBEDDED_KB_JSON).unwrap_or_default()
 }
 
-/// Busca as `limit` notas técnicas mais relevantes para uma consulta do administrador.
-/// Retorna vazio quando nenhuma entrada atinge o limiar mínimo de relevância.
+/// Carrega a base técnica local resolvendo `knowledge/sysadmin_kb.json` pelo diretório ativo da config.
+#[cfg(test)]
+pub fn load_kb_entries() -> Vec<KbEntry> {
+    let base_dir = crate::chat::config::AppConfig::resolve_active_config_dir();
+    load_kb_entries_from_dir(&base_dir)
+}
+
+/// Busca as `limit` notas técnicas mais relevantes resolvendo a KB pelo diretório ativo da config.
 pub fn retrieve_relevant_notes(query: &str, limit: usize) -> Vec<KbHit> {
+    let base_dir = crate::chat::config::AppConfig::resolve_active_config_dir();
+    retrieve_relevant_notes_from_dir(&base_dir, query, limit)
+}
+
+/// Busca as `limit` notas técnicas mais relevantes a partir de `base_dir` (`B8`).
+pub fn retrieve_relevant_notes_from_dir(base_dir: &Path, query: &str, limit: usize) -> Vec<KbHit> {
     if limit == 0 || query.trim().is_empty() {
         return Vec::new();
     }
-    let entries = load_kb_entries();
+    let entries = load_kb_entries_from_dir(base_dir);
     let norm_query = normalize_ascii_lower(query);
     let query_tokens = tokenize(&norm_query);
     if query_tokens.is_empty() {

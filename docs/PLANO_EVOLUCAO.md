@@ -96,13 +96,13 @@ Estas tarefas não mudam o que o programa faz; deixam o código mais fácil de m
 | --- | --- | --- | --- | --- | --- |
 | B1 | Git com tag `pre-refactor` e CI com `fmt`, `clippy` e `test` | Rede de segurança para tudo o que vem depois | 0 | 0,5 dia | Concluído |
 | B2 | Snapshots de `--help` e dos códigos de saída do CLI | Detecta regressão ao mexer no `cli.rs` | 0 | 0,5 dia | Concluído |
-| B3 | `lib.rs` e `main.rs` fino com `ExitCode` | API pública, testes de integração e destructors que rodam | 2 | 0,5 dia | Não iniciado |
-| B4 | Mover o `CtrlCGuard` para `platform/signals` | O treino deixa de depender da avaliação | 2 | 1h | Não iniciado |
-| B5 | Agrupar módulos em `chat/`, `eval/`, `neural/` e `platform/` | Fronteiras visíveis entre os três domínios | 2 | 1 dia | Não iniciado |
-| B6 | Renomear `evaluation`, `infrastructure` e `experience` | Os nomes passam a dizer o que fazem | 2 | 0,5 dia | Não iniciado |
-| B7 | Dividir o `cli.rs` em `repl`, `eval`, `train`, `marathon`, `quantize` e `hw` | Um arquivo de 3.900 linhas vira partes legíveis | 2 | 1 dia | Não iniciado |
-| B8 | Resolver caminhos pelo diretório da config, e não pelo CWD | Mesmo resultado em qualquer pasta de execução | 2 | 1 dia | Não iniciado |
-| B9 | Limpeza rápida: banner "Fase 0", `allow(dead_code)` obsoletos, defaults de `:train` (60) e CLI (80) | Higiene que evita confusão | 2 | 1h | Não iniciado |
+| B3 | `lib.rs` e `main.rs` fino com `ExitCode` | API pública, testes de integração e destructors que rodam | 2 | 0,5 dia | Concluído |
+| B4 | Mover o `CtrlCGuard` para `platform/signals` | O treino deixa de depender da avaliação | 2 | 1h | Concluído |
+| B5 | Agrupar módulos em `chat/`, `eval/`, `neural/` e `platform/` | Fronteiras visíveis entre os três domínios | 2 | 1 dia | Concluído |
+| B6 | Renomear `evaluation`, `infrastructure` e `experience` | Os nomes passam a dizer o que fazem | 2 | 0,5 dia | Concluído |
+| B7 | Dividir o `cli.rs` em `repl`, `eval`, `train`, `marathon`, `quantize` e `hw` | Um arquivo de 3.900 linhas vira partes legíveis | 2 | 1 dia | Concluído |
+| B8 | Resolver caminhos pelo diretório da config, e não pelo CWD | Mesmo resultado em qualquer pasta de execução | 2 | 1 dia | Concluído |
+| B9 | Limpeza rápida: banner "Fase 0", `allow(dead_code)` obsoletos, defaults de `:train` (60) e CLI (80) | Higiene que evita confusão | 2 | 1h | Concluído |
 | B10 | Camada `app/` com o currículo da maratona, `load_seed_corpus`, o recorder e a quantização | O CLI passa a só traduzir argumentos | 4 | 3 a 5 dias | Não iniciado |
 | B11 | `CliError` com código de saída dentro do enum | Acaba com `String` e `i32` mágicos | 4 | 2 a 3 dias | Não iniciado |
 | B12 | `clap` em `train-neural`, depois `eval-neural` e por fim `eval` | Help gerado e erros consistentes | 4 | 3 a 5 dias | Não iniciado |
@@ -170,12 +170,12 @@ Cada bug corrigido ganha um teste, e os testes novos protegem as refatorações 
 | T1 | CI com `cargo fmt --check`, `cargo clippy -D warnings` e `cargo test` | Rede de segurança automática | 0 | Concluído |
 | T2 | Snapshots de `--help` (geral, `eval`, `train-neural`, `eval-neural`) | Pega divergência entre help e parser (A14) | 0 | Concluído |
 | T3 | Um teste de regressão por bug, de A1 a A17 | Bug corrigido continua corrigido | 1 | Concluído |
-| T4 | Testes de tabela para os parsers de argumentos, válidos e inválidos | Base segura para trocar por `clap` | 2 | Não iniciado |
-| T5 | Testes do REPL com writers injetados (comando conhecido, desconhecido e `/var/log`) | Cobre A4 e o `enum Command` | 2 | Não iniciado |
-| T6 | Padronizar o lock de CWD com `unwrap_or_else(\|e\| e.into_inner())` ou usar `serial_test` | Um teste que falha não derruba os outros | 2 | Não iniciado |
-| T7 | Pular os testes de arquivo somente leitura quando rodar como root | CI em Docker costuma rodar como root | 2 | Não iniciado |
-| T8 | Dar folga ao teste de `--max-duration` ou injetar um relógio | Evita falha intermitente em máquina lenta | 2 | Não iniciado |
-| T9 | Módulo `test_support` com `TempDirGuard` e um único mock HTTP; renomear `_cancel_server` | Menos duplicação e nomes honestos | 2 | Não iniciado |
+| T4 | Testes de tabela para os parsers de argumentos, válidos e inválidos | Base segura para trocar por `clap` | 2 | Concluído |
+| T5 | Testes do REPL com writers injetados (comando conhecido, desconhecido e `/var/log`) | Cobre A4 e o `enum Command` | 2 | Concluído |
+| T6 | Padronizar o lock de CWD com `unwrap_or_else(\|e\| e.into_inner())` ou usar `serial_test` | Um teste que falha não derruba os outros | 2 | Concluído |
+| T7 | Pular os testes de arquivo somente leitura quando rodar como root | CI em Docker costuma rodar como root | 2 | Concluído |
+| T8 | Dar folga ao teste de `--max-duration` ou injetar um relógio | Evita falha intermitente em máquina lenta | 2 | Concluído |
+| T9 | Módulo `test_support` com `TempDirGuard` e um único mock HTTP; renomear `_cancel_server` | Menos duplicação e nomes honestos | 2 | Concluído |
 | T10 | Mover o teste da maratona de `training` para os testes do `cli` | Camadas na ordem certa | 4 | Não iniciado |
 | T11 | Testes do agente: comando negado, confirmação, auditoria e injeção na saída de ferramenta | Segurança comprovada, e não só declarada | 5 | Não iniciado |
 
@@ -235,7 +235,7 @@ Seis decisões ainda dependem de você, e sete marcos mostram quando cada fase e
 
 - [x] Fase 0, Rede de segurança: repositório com tag `pre-refactor`, CI verde e snapshots de help.
 - [x] Fase 1, Bugs críticos: A1 a A11 corrigidos, cada um com teste.
-- [ ] Fase 2, Organização: `lib.rs`, pastas por domínio e `cli` dividido, com todos os testes antigos passando.
+- [x] Fase 2, Organização: `lib.rs`, pastas por domínio e `cli` dividido, com todos os testes antigos passando.
 - [ ] Fase 3, Cérebro trocável: `ModelBackend` com Ollama e Claude, e baseline do `eval` registrado.
 - [ ] Fase 4, Consolidação: `cli` sem lógica de negócio, `CliError` e `clap` nos subcomandos.
 - [ ] Fase 5, Agente somente leitura: ferramentas, política, auditoria e testes de negação passando.

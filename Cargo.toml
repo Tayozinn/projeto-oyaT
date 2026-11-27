@@ -2,7 +2,7 @@
 name = "servermind-ai"
 version = "0.1.0"
 edition = "2021"
-description = "SERVERMIND AI - Assistente Conversacional Local (Fase 0)"
+description = "SERVERMIND AI - Assistente Consultivo Local"
 authors = ["SERVERMIND Team"]
 
 [dependencies]

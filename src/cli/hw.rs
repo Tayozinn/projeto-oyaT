@@ -1,8 +1,7 @@
-use std::io::{self, Write};
+use std::io::Write;
 
-pub(super) fn handle_hw_command() {
-    let mut out = io::stdout();
-    let _ = run_hw_cli(&mut out);
+pub(super) fn handle_hw_command(out: &mut dyn Write) {
+    let _ = run_hw_cli(out);
 }
 
 pub fn run_hw_cli(out: &mut dyn Write) -> i32 {

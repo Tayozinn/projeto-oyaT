@@ -355,17 +355,19 @@ fn load_qa_datasets_combined(explicit_ds: Option<&PathBuf>) -> Result<Vec<String
     if let Some(ds) = explicit_ds {
         qa.extend(load_seed_corpus(ds)?);
     } else {
-        let v3 = std::path::Path::new("datasets/servermind_corpus_v3_balanced.jsonl");
+        let v3 = crate::chat::config::AppConfig::resolve_from_config_dir(
+            "datasets/servermind_corpus_v3_balanced.jsonl",
+        );
         if v3.is_file() {
-            qa.extend(load_seed_corpus(v3)?);
+            qa.extend(load_seed_corpus(&v3)?);
         } else {
             for cand in [
                 "datasets/servermind_corpus_v2.jsonl",
                 "datasets/servermind_seed_v1.jsonl",
             ] {
-                let p = std::path::Path::new(cand);
+                let p = crate::chat::config::AppConfig::resolve_from_config_dir(cand);
                 if p.is_file() {
-                    qa.extend(load_seed_corpus(p)?);
+                    qa.extend(load_seed_corpus(&p)?);
                 }
             }
         }
@@ -393,7 +395,8 @@ pub(super) fn run_autonomous_marathon(
     let book_dirs = if !params.corpus_dirs_override.is_empty() {
         params.corpus_dirs_override.clone()
     } else {
-        let default_books = PathBuf::from("datasets/pretrain_books");
+        let default_books =
+            crate::chat::config::AppConfig::resolve_from_config_dir("datasets/pretrain_books");
         if default_books.is_dir() {
             vec![default_books]
         } else {
