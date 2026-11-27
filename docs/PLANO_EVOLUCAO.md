@@ -103,11 +103,11 @@ Estas tarefas não mudam o que o programa faz; deixam o código mais fácil de m
 | B7 | Dividir o `cli.rs` em `repl`, `eval`, `train`, `marathon`, `quantize` e `hw` | Um arquivo de 3.900 linhas vira partes legíveis | 2 | 1 dia | Concluído |
 | B8 | Resolver caminhos pelo diretório da config, e não pelo CWD | Mesmo resultado em qualquer pasta de execução | 2 | 1 dia | Concluído |
 | B9 | Limpeza rápida: banner "Fase 0", `allow(dead_code)` obsoletos, defaults de `:train` (60) e CLI (80) | Higiene que evita confusão | 2 | 1h | Concluído |
-| B10 | Camada `app/` com o currículo da maratona, `load_seed_corpus`, o recorder e a quantização | O CLI passa a só traduzir argumentos | 4 | 3 a 5 dias | Não iniciado |
-| B11 | `CliError` com código de saída dentro do enum | Acaba com `String` e `i32` mágicos | 4 | 2 a 3 dias | Não iniciado |
-| B12 | `clap` em `train-neural`, depois `eval-neural` e por fim `eval` | Help gerado e erros consistentes | 4 | 3 a 5 dias | Não iniciado |
-| B13 | `enum Command` no REPL, com o `/help` gerado da tabela de comandos | Remove a duplicação do texto de ajuda | 4 | 1 a 2 dias | Não iniciado |
-| B14 | `rustyline` no REPL | Histórico e setas | 4 | 0,5 dia | Não iniciado |
+| B10 | Camada `app/` com o currículo da maratona, `load_seed_corpus`, o recorder e a quantização | O CLI passa a só traduzir argumentos | 4 | 3 a 5 dias | Concluído |
+| B11 | `CliError` com código de saída dentro do enum | Acaba com `String` e `i32` mágicos | 4 | 2 a 3 dias | Concluído |
+| B12 | `clap` em `train-neural`, depois `eval-neural` e por fim `eval` | Help gerado e erros consistentes | 4 | 3 a 5 dias | Concluído |
+| B13 | `enum Command` no REPL, com o `/help` gerado da tabela de comandos | Remove a duplicação do texto de ajuda | 4 | 1 a 2 dias | Concluído |
+| B14 | `rustyline` no REPL | Histórico e setas | 4 | 0,5 dia | Concluído |
 | B15 | Constantes e `Default` para hiperparâmetros; fim dos sentinelas `usize::MAX / 2` | Configuração legível | Depois | 1 dia | Não iniciado |
 | B16 | `enum Backend` (CPU e GPU) e `StopCondition` no treino | Remove os `.expect` e cinco blocos repetidos; só vale quando o neural voltar | Depois | 3 a 5 dias | Não iniciado |
 | B17 | Workspace com crates separados, começando por `neural` | Opcional: compila e evolui em separado | Depois | 1 a 2 dias | Não iniciado |
@@ -176,7 +176,7 @@ Cada bug corrigido ganha um teste, e os testes novos protegem as refatorações 
 | T7 | Pular os testes de arquivo somente leitura quando rodar como root | CI em Docker costuma rodar como root | 2 | Concluído |
 | T8 | Dar folga ao teste de `--max-duration` ou injetar um relógio | Evita falha intermitente em máquina lenta | 2 | Concluído |
 | T9 | Módulo `test_support` com `TempDirGuard` e um único mock HTTP; renomear `_cancel_server` | Menos duplicação e nomes honestos | 2 | Concluído |
-| T10 | Mover o teste da maratona de `training` para os testes do `cli` | Camadas na ordem certa | 4 | Não iniciado |
+| T10 | Mover o teste da maratona de `training` para os testes do `cli` | Camadas na ordem certa | 4 | Concluído |
 | T11 | Testes do agente: comando negado, confirmação, auditoria e injeção na saída de ferramenta | Segurança comprovada, e não só declarada | 5 | Não iniciado |
 
 ## Pontos de atenção e riscos
@@ -237,7 +237,7 @@ Seis decisões ainda dependem de você, e sete marcos mostram quando cada fase e
 - [x] Fase 1, Bugs críticos: A1 a A11 corrigidos, cada um com teste.
 - [x] Fase 2, Organização: `lib.rs`, pastas por domínio e `cli` dividido, com todos os testes antigos passando.
 - [x] Fase 3, Cérebro trocável: `ModelBackend` com Ollama e Claude (+ presets gratuitos `gemini`, `groq`, `openrouter`), e baseline do `eval` registrado em `docs/EVAL_BACKENDS.md`.
-- [ ] Fase 4, Consolidação: `cli` sem lógica de negócio, `CliError` e `clap` nos subcomandos.
+- [x] Fase 4, Consolidação: `cli` sem lógica de negócio, `CliError` e `clap` nos subcomandos (`+ enum Command` e `rustyline` no REPL).
 - [ ] Fase 5, Agente somente leitura: ferramentas, política, auditoria e testes de negação passando.
 - [ ] Fase 6, Agente com ações: confirmação, execução isolada e um cenário ponta a ponta em VM.
 

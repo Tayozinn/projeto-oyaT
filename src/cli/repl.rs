@@ -7,15 +7,129 @@ use crate::chat::config::{
 };
 use crate::chat::models::{OllamaHealth, Role};
 use crate::chat::ollama::OllamaClient;
+use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
 use std::io::{self, BufRead, IsTerminal, Write};
 
 /// Interface interativa de terminal (CLI) para o administrador.
+/// Quando `stdin` e `stdout` são terminais interativos (TTY), utiliza [`rustyline`] (`B14` — Fase 4)
+/// oferecendo navegação de histórico por setas (`↑`/`↓`), busca reversa (`Ctrl+R`) e edição de linha;
+/// caso contrário (pipes/redirecionamento), cai automaticamente para `BufRead` determinístico.
 pub fn run_terminal_loop(session: &mut AgentSession) {
+    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        if let Ok(mut rl) = DefaultEditor::new() {
+            run_terminal_loop_with_rustyline(session, &mut rl);
+            return;
+        }
+    }
+
     let stdin = io::stdin();
     let mut reader = stdin.lock();
     let mut out = io::stdout();
     let mut err = io::stderr();
     run_terminal_loop_with_io(session, &mut reader, &mut out, &mut err, true);
+}
+
+fn run_terminal_loop_with_rustyline(session: &mut AgentSession, rl: &mut DefaultEditor) {
+    let mut out = io::stdout();
+    let mut err = io::stderr();
+    print_banner(session, &mut out);
+    print_health_report(session, &mut out, &mut err);
+
+    let _ = writeln!(
+        out,
+        "\nDigite sua mensagem e pressione Enter, ou use um comando (ex: :help, :models, :history, :new, :instructions, :quit)."
+    );
+
+    loop {
+        let model_lbl = session.active_model_label();
+        let prompt = format!(
+            "\n[Conversa #{} | {}] Administrador > ",
+            session.current_conversation().id,
+            model_lbl
+        );
+
+        match rl.readline(&prompt) {
+            Ok(line) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let _ = rl.add_history_entry(trimmed);
+
+                let stdin = io::stdin();
+                let mut sub_reader = stdin.lock();
+                if process_repl_line(trimmed, session, &mut sub_reader, &mut out, &mut err, true) {
+                    break;
+                }
+            }
+            Err(ReadlineError::Interrupted) => {
+                let _ = writeln!(
+                    out,
+                    "(Linha cancelada com Ctrl+C. Digite :quit para encerrar o SERVERMIND AI.)"
+                );
+            }
+            Err(ReadlineError::Eof) => {
+                let _ = writeln!(out, "\nEncerrando SERVERMIND AI. Até logo!");
+                break;
+            }
+            Err(e) => {
+                let _ = writeln!(err, "\nErro ao ler entrada do terminal: {}", e);
+                break;
+            }
+        }
+    }
+}
+
+/// Processa uma única linha não-vazia do REPL (comando ou prompt conversacional).
+/// Retorna `true` se a sessão deve encerrar.
+fn process_repl_line(
+    trimmed: &str,
+    session: &mut AgentSession,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    enable_spinner: bool,
+) -> bool {
+    if is_repl_command_input(trimmed) {
+        return handle_command_with_io(trimmed, session, input, out, err);
+    }
+
+    let mut spinner = SpinnerHandle::spawn(enable_spinner);
+    let mut para_buf = ParagraphStreamBuffer::new(trimmed);
+    let mut started_output = false;
+    let stream_res = session.send_user_message_streaming(trimmed, |chunk| {
+        if let Some(ready_para) = para_buf.push_chunk(chunk) {
+            if !started_output {
+                spinner.stop_and_join();
+                let _ = writeln!(out, "\nSERVERMIND AI >");
+                started_output = true;
+            }
+            let _ = write!(out, "{}", ready_para);
+            let _ = out.flush();
+        }
+    });
+    spinner.stop_and_join();
+    match stream_res {
+        Ok(guarded_reply) => {
+            let tail = para_buf.finish(&guarded_reply);
+            if !started_output {
+                let _ = writeln!(out, "\nSERVERMIND AI >\n{}", tail);
+            } else if !tail.is_empty() {
+                let _ = write!(out, "{}", tail);
+                if !tail.ends_with('\n') {
+                    let _ = writeln!(out);
+                }
+            }
+        }
+        Err(e) => {
+            if started_output {
+                let _ = writeln!(out);
+            }
+            let _ = writeln!(err, "\n[ERRO AO PROCESSAR MENSAGEM]\n{}", e);
+        }
+    }
+    false
 }
 
 /// Versão com `BufRead` e `Write` injetados do loop interativo do REPL (`T5`).
@@ -55,47 +169,8 @@ pub(crate) fn run_terminal_loop_with_io(
                 if trimmed.is_empty() {
                     continue;
                 }
-
-                if is_repl_command_input(trimmed) {
-                    if handle_command_with_io(trimmed, session, input, out, err) {
-                        break;
-                    }
-                    continue;
-                }
-
-                let mut spinner = SpinnerHandle::spawn(enable_spinner);
-                let mut para_buf = ParagraphStreamBuffer::new(trimmed);
-                let mut started_output = false;
-                let stream_res = session.send_user_message_streaming(trimmed, |chunk| {
-                    if let Some(ready_para) = para_buf.push_chunk(chunk) {
-                        if !started_output {
-                            spinner.stop_and_join();
-                            let _ = writeln!(out, "\nSERVERMIND AI >");
-                            started_output = true;
-                        }
-                        let _ = write!(out, "{}", ready_para);
-                        let _ = out.flush();
-                    }
-                });
-                spinner.stop_and_join();
-                match stream_res {
-                    Ok(guarded_reply) => {
-                        let tail = para_buf.finish(&guarded_reply);
-                        if !started_output {
-                            let _ = writeln!(out, "\nSERVERMIND AI >\n{}", tail);
-                        } else if !tail.is_empty() {
-                            let _ = write!(out, "{}", tail);
-                            if !tail.ends_with('\n') {
-                                let _ = writeln!(out);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        if started_output {
-                            let _ = writeln!(out);
-                        }
-                        let _ = writeln!(err, "\n[ERRO AO PROCESSAR MENSAGEM]\n{}", e);
-                    }
+                if process_repl_line(trimmed, session, input, out, err, enable_spinner) {
+                    break;
                 }
             }
             Err(e) => {
@@ -348,59 +423,248 @@ impl ParagraphStreamBuffer {
     }
 }
 
-fn is_known_repl_command_name(cmd: &str) -> bool {
-    matches!(
-        cmd,
-        "quit"
-            | "exit"
-            | "sair"
-            | "q"
-            | "help"
-            | "ajuda"
-            | "h"
-            | "?"
-            | "models"
-            | "model"
-            | "modelos"
-            | "modelo"
-            | "history"
-            | "historico"
-            | "hist"
-            | "load"
-            | "open"
-            | "carregar"
-            | "abrir"
-            | "new"
-            | "nova"
-            | "instructions"
-            | "instruction"
-            | "prompt"
-            | "instrucoes"
-            | "instrucao"
-            | "remember"
-            | "lembrar"
-            | "memorizar"
-            | "memories"
-            | "memorias"
-            | "memory"
-            | "forget"
-            | "esquecer"
-            | "context"
-            | "contexto"
-            | "status"
-            | "kb"
-            | "estudo"
-            | "study"
-            | "backend"
-            | "hw"
-            | "hardware"
-            | "train"
-            | "treinar"
-            | "exp"
-            | "experiencias"
-            | "quantize"
-            | "quantizar"
-    )
+/// Comandos tipados do REPL interativo (`B13` — Fase 4).
+///
+/// Tanto a detecção de comandos válidos (`is_repl_command_input`) quanto a renderização
+/// de `:help` / `/ajuda` derivam diretamente da tabela única [`REPL_COMMAND_SPECS`],
+/// eliminando duplicação entre parser e documentação.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Command {
+    Quit,
+    Help,
+    Models,
+    Status,
+    History,
+    Load,
+    New,
+    Context,
+    Instructions,
+    Remember,
+    Memories,
+    Forget,
+    Kb,
+    Backend,
+    Hw,
+    Train,
+    Exp,
+    Quantize,
+}
+
+struct ReplCommandSpec {
+    command: Command,
+    section: &'static str,
+    aliases: &'static [&'static str],
+    help_entries: &'static [(&'static str, &'static str)],
+}
+
+const REPL_COMMAND_SPECS: &[ReplCommandSpec] = &[
+    ReplCommandSpec {
+        command: Command::Models,
+        section: "Seleção de Modelos (Ollama Local)",
+        aliases: &["models", "model", "modelos", "modelo"],
+        help_entries: &[
+            (
+                ":models",
+                "Lista os modelos instalados no Ollama local e permite trocar interativamente",
+            ),
+            (
+                ":model <nome_ou_numero>",
+                "Troca para outro modelo instalado e persiste a escolha localmente",
+            ),
+        ],
+    },
+    ReplCommandSpec {
+        command: Command::Status,
+        section: "Seleção de Modelos (Ollama Local)",
+        aliases: &["status"],
+        help_entries: &[(
+            ":status",
+            "Verifica a disponibilidade do Ollama e do modelo ativo",
+        )],
+    },
+    ReplCommandSpec {
+        command: Command::History,
+        section: "Histórico e Conversas",
+        aliases: &["history", "historico", "hist"],
+        help_entries: &[
+            (
+                ":history",
+                "Lista conversas salvas e permite escolher uma para reabrir com seu contexto",
+            ),
+            (
+                ":history <id>",
+                "Reabre diretamente a conversa pelo ID informado",
+            ),
+        ],
+    },
+    ReplCommandSpec {
+        command: Command::Load,
+        section: "Histórico e Conversas",
+        aliases: &["load", "open", "carregar", "abrir"],
+        help_entries: &[(":load <id>", "Atalho direto para reabrir conversa salva pelo ID")],
+    },
+    ReplCommandSpec {
+        command: Command::New,
+        section: "Histórico e Conversas",
+        aliases: &["new", "nova"],
+        help_entries: &[(
+            ":new",
+            "Inicia uma nova conversa separada sem apagar as anteriores",
+        )],
+    },
+    ReplCommandSpec {
+        command: Command::Context,
+        section: "Histórico e Conversas",
+        aliases: &["context", "contexto"],
+        help_entries: &[(
+            ":context",
+            "Exibe todas as mensagens da conversa ativa",
+        )],
+    },
+    ReplCommandSpec {
+        command: Command::Instructions,
+        section: "Instruções do Assistente",
+        aliases: &[
+            "instructions",
+            "instruction",
+            "prompt",
+            "instrucoes",
+            "instrucao",
+        ],
+        help_entries: &[
+            (
+                ":instructions",
+                "Exibe as instruções atuais, regras de segurança e como personalizar",
+            ),
+            (
+                ":instructions <texto>",
+                "Define e persiste novas instruções personalizadas (máx. 2000 caracteres)",
+            ),
+            (
+                ":instructions edit",
+                "Abre prompt interativo para digitar novas instruções",
+            ),
+            (
+                ":instructions reset",
+                "Restaura as instruções padrão do assistente",
+            ),
+        ],
+    },
+    ReplCommandSpec {
+        command: Command::Remember,
+        section: "Memórias Explícitas",
+        aliases: &["remember", "lembrar", "memorizar"],
+        help_entries: &[(
+            ":remember <texto>",
+            "Salva uma memória explicitamente no SQLite",
+        )],
+    },
+    ReplCommandSpec {
+        command: Command::Memories,
+        section: "Memórias Explícitas",
+        aliases: &["memories", "memorias", "memory"],
+        help_entries: &[(
+            ":memories",
+            "Lista todas as memórias salvas explicitamente",
+        )],
+    },
+    ReplCommandSpec {
+        command: Command::Forget,
+        section: "Memórias Explícitas",
+        aliases: &["forget", "esquecer"],
+        help_entries: &[(
+            ":forget <id>",
+            "Remove uma memória explícita pelo ID",
+        )],
+    },
+    ReplCommandSpec {
+        command: Command::Kb,
+        section: "Geral",
+        aliases: &["kb", "estudo", "study"],
+        help_entries: &[(
+            ":kb [consulta]",
+            "Lista ou busca runbooks na base técnica local",
+        )],
+    },
+    ReplCommandSpec {
+        command: Command::Backend,
+        section: "Geral",
+        aliases: &["backend"],
+        help_entries: &[(
+            ":backend [nome|presets] [arg]",
+            "Alterna backend (ollama, neural, claude ou presets gratuitos como free-gemini/free-groq)",
+        )],
+    },
+    ReplCommandSpec {
+        command: Command::Hw,
+        section: "Geral",
+        aliases: &["hw", "hardware"],
+        help_entries: &[(
+            ":hw",
+            "Inspeciona hardware, VRAM/Vulkan e benchmark de matmul CPU",
+        )],
+    },
+    ReplCommandSpec {
+        command: Command::Train,
+        section: "Geral",
+        aliases: &["train", "treinar"],
+        help_entries: &[(
+            ":train [steps | marathon [6h]]",
+            "Treina o ServerMind Neural (padrão: 80 passos; ex.: `:train marathon 6h`)",
+        )],
+    },
+    ReplCommandSpec {
+        command: Command::Exp,
+        section: "Geral",
+        aliases: &["exp", "experiencias"],
+        help_entries: &[(
+            ":exp",
+            "Exibe estatísticas da memória em 3 camadas (experiências)",
+        )],
+    },
+    ReplCommandSpec {
+        command: Command::Quantize,
+        section: "Geral",
+        aliases: &["quantize", "quantizar"],
+        help_entries: &[(
+            ":quantize <src> <dst> [fp16|bf16|int8|int4]",
+            "Exporta pacote quantizado compacto SMQ1",
+        )],
+    },
+    ReplCommandSpec {
+        command: Command::Help,
+        section: "Geral",
+        aliases: &["help", "ajuda", "h", "?"],
+        help_entries: &[(":help", "Exibe esta mensagem de ajuda")],
+    },
+    ReplCommandSpec {
+        command: Command::Quit,
+        section: "Geral",
+        aliases: &["quit", "exit", "sair", "q"],
+        help_entries: &[(":quit", "Encerra o programa com segurança")],
+    },
+];
+
+impl Command {
+    pub(crate) fn from_name(raw: &str) -> Option<Self> {
+        let lower = raw.trim().to_lowercase();
+        REPL_COMMAND_SPECS
+            .iter()
+            .find(|spec| spec.aliases.contains(&lower.as_str()))
+            .map(|spec| spec.command)
+    }
+
+    pub(crate) fn parse_line(cmd_line: &str) -> Result<(Self, &str), (&str, String)> {
+        let prefix = &cmd_line[..1];
+        let without_prefix = &cmd_line[1..];
+        let mut parts = without_prefix.splitn(2, char::is_whitespace);
+        let raw_cmd = parts.next().unwrap_or("").to_lowercase();
+        let arg = parts.next().map(|s| s.trim()).unwrap_or("");
+        match Self::from_name(&raw_cmd) {
+            Some(cmd) => Ok((cmd, arg)),
+            None => Err((prefix, raw_cmd)),
+        }
+    }
 }
 
 /// Verifica se a linha digitada no REPL deve ser tratada como comando (e não mensagem de chat).
@@ -412,17 +676,13 @@ pub(crate) fn is_repl_command_input(trimmed: &str) -> bool {
         return true;
     }
     if let Some(without_slash) = trimmed.strip_prefix('/') {
-        let raw_cmd = without_slash
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_lowercase();
-        return is_known_repl_command_name(&raw_cmd);
+        let raw_cmd = without_slash.split_whitespace().next().unwrap_or("");
+        return Command::from_name(raw_cmd).is_some();
     }
     false
 }
 
-/// Processa comandos iniciados por `:` ou `/` usando `BufRead` e `Write` injetados (`T5`).
+/// Processa comandos iniciados por `:` ou `/` usando `BufRead` e `Write` injetados (`T5` + `B13`).
 /// Retorna `true` se o programa deve encerrar.
 pub(crate) fn handle_command_with_io(
     cmd_line: &str,
@@ -431,14 +691,20 @@ pub(crate) fn handle_command_with_io(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> bool {
-    let prefix = &cmd_line[..1];
-    let without_prefix = &cmd_line[1..];
-    let mut parts = without_prefix.splitn(2, char::is_whitespace);
-    let raw_cmd = parts.next().unwrap_or("").to_lowercase();
-    let arg = parts.next().map(|s| s.trim()).unwrap_or("");
+    let (command, arg) = match Command::parse_line(cmd_line) {
+        Ok(pair) => pair,
+        Err((prefix, raw_cmd)) => {
+            let _ = writeln!(
+                err,
+                "Comando desconhecido: '{}{}'. Digite :help (ou /ajuda) para ver os comandos disponíveis.",
+                prefix, raw_cmd
+            );
+            return false;
+        }
+    };
 
-    match raw_cmd.as_str() {
-        "quit" | "exit" | "sair" | "q" => {
+    match command {
+        Command::Quit => {
             let _ = writeln!(
                 out,
                 "Encerrando SERVERMIND AI. Histórico e configurações salvos localmente em '{}' e '{}'.",
@@ -447,16 +713,16 @@ pub(crate) fn handle_command_with_io(
             );
             return true;
         }
-        "help" | "ajuda" | "h" | "?" => {
+        Command::Help => {
             print_help(out);
         }
-        "models" | "model" | "modelos" | "modelo" => {
+        Command::Models => {
             handle_models_command(arg, session, input, out, err);
         }
-        "history" | "historico" | "hist" => {
+        Command::History => {
             handle_history_command(arg, session, input, out, err);
         }
-        "load" | "open" | "carregar" | "abrir" => {
+        Command::Load => {
             if arg.is_empty() {
                 let _ = writeln!(
                     err,
@@ -466,7 +732,7 @@ pub(crate) fn handle_command_with_io(
                 reopen_conversation_by_str(arg, session, out, err);
             }
         }
-        "new" | "nova" => match session.start_new_conversation() {
+        Command::New => match session.start_new_conversation() {
             Ok(conv) => {
                 let _ = writeln!(
                     out,
@@ -478,10 +744,10 @@ pub(crate) fn handle_command_with_io(
                 let _ = writeln!(err, "Erro ao iniciar nova conversa: {}", e);
             }
         },
-        "instructions" | "instruction" | "prompt" | "instrucoes" | "instrucao" => {
+        Command::Instructions => {
             handle_instructions_command(arg, session, input, out, err);
         }
-        "remember" | "lembrar" | "memorizar" => {
+        Command::Remember => {
             if arg.is_empty() {
                 let _ = writeln!(
                     err,
@@ -502,10 +768,10 @@ pub(crate) fn handle_command_with_io(
                 }
             }
         }
-        "memories" | "memorias" | "memory" => {
+        Command::Memories => {
             handle_memories_command(arg, session, out, err);
         }
-        "forget" | "esquecer" => {
+        Command::Forget => {
             if arg.is_empty() {
                 let _ = writeln!(
                     err,
@@ -539,37 +805,30 @@ pub(crate) fn handle_command_with_io(
                 }
             }
         }
-        "context" | "contexto" => {
+        Command::Context => {
             print_current_conversation_messages(session, out);
         }
-        "status" => {
+        Command::Status => {
             print_health_report(session, out, err);
         }
-        "kb" | "estudo" | "study" => {
+        Command::Kb => {
             handle_kb_command(arg, session, out);
         }
-        "backend" => {
+        Command::Backend => {
             handle_backend_command(arg, session, out, err);
         }
-        "hw" | "hardware" => {
+        Command::Hw => {
             handle_hw_command(out);
         }
-        "train" | "treinar" => {
+        Command::Train => {
             handle_train_command(arg, out, err);
         }
-        "exp" | "experiencias" => {
+        Command::Exp => {
             handle_exp_command(arg, session, out, err);
         }
-        "quantize" | "quantizar" => {
+        Command::Quantize => {
             let base_dir = session.config().config_dir();
             handle_quantize_command(arg, &base_dir, out, err);
-        }
-        _ => {
-            let _ = writeln!(
-                err,
-                "Comando desconhecido: '{}{}'. Digite :help (ou /ajuda) para ver os comandos disponíveis.",
-                prefix, raw_cmd
-            );
         }
     }
 
@@ -578,101 +837,20 @@ pub(crate) fn handle_command_with_io(
 
 fn print_help(out: &mut dyn Write) {
     let _ = writeln!(out, "\nComandos disponíveis (aceitam prefixo ':' ou '/'):");
-    let _ = writeln!(out, "  --- Seleção de Modelos (Ollama Local) ---");
-    let _ = writeln!(
-        out,
-        "  :models                  - Lista os modelos instalados no Ollama local e permite trocar interativamente"
-    );
-    let _ = writeln!(
-        out,
-        "  :model <nome_ou_numero>  - Troca para outro modelo instalado e persiste a escolha localmente"
-    );
-    let _ = writeln!(
-        out,
-        "  :status                  - Verifica a disponibilidade do Ollama e do modelo ativo"
-    );
-    let _ = writeln!(out, "\n  --- Histórico e Conversas ---");
-    let _ = writeln!(
-        out,
-        "  :history                 - Lista conversas salvas e permite escolher uma para reabrir com seu contexto"
-    );
-    let _ = writeln!(
-        out,
-        "  :history <id>            - Reabre diretamente a conversa pelo ID informado"
-    );
-    let _ = writeln!(
-        out,
-        "  :new                     - Inicia uma nova conversa separada sem apagar as anteriores"
-    );
-    let _ = writeln!(
-        out,
-        "  :context                 - Exibe todas as mensagens da conversa ativa"
-    );
-    let _ = writeln!(out, "\n  --- Instruções do Assistente ---");
-    let _ = writeln!(
-        out,
-        "  :instructions            - Exibe as instruções atuais, regras de segurança e como personalizar"
-    );
-    let _ = writeln!(
-        out,
-        "  :instructions <texto>    - Define e persiste novas instruções personalizadas (máx. {} caracteres)",
-        MAX_INSTRUCTIONS_CHARS
-    );
-    let _ = writeln!(
-        out,
-        "  :instructions edit       - Abre prompt interativo para digitar novas instruções"
-    );
-    let _ = writeln!(
-        out,
-        "  :instructions reset      - Restaura as instruções padrão do assistente"
-    );
-    let _ = writeln!(out, "\n  --- Memórias Explícitas ---");
-    let _ = writeln!(
-        out,
-        "  :remember <texto>        - Salva uma memória explicitamente no SQLite"
-    );
-    let _ = writeln!(
-        out,
-        "  :memories                - Lista todas as memórias salvas explicitamente"
-    );
-    let _ = writeln!(
-        out,
-        "  :forget <id>             - Remove uma memória explícita pelo ID"
-    );
-    let _ = writeln!(out, "\n  --- Geral ---");
-    let _ = writeln!(
-        out,
-        "  :kb [consulta]           - Lista ou busca runbooks na base técnica local"
-    );
-    let _ = writeln!(
-        out,
-        "  :backend [nome|presets] [arg] - Alterna backend (ollama, neural, claude ou presets gratuitos como free-gemini/free-groq)"
-    );
-    let _ = writeln!(
-        out,
-        "  :hw                      - Inspeciona hardware, VRAM/Vulkan e benchmark de matmul CPU"
-    );
-    let _ = writeln!(
-        out,
-        "  :train [steps | marathon [6h]] - Treina o ServerMind Neural (padrão: {} passos; ex.: `:train marathon 6h`)",
-        DEFAULT_TRAIN_STEPS
-    );
-    let _ = writeln!(
-        out,
-        "  :exp                     - Exibe estatísticas da memória em 3 camadas (experiências)"
-    );
-    let _ = writeln!(
-        out,
-        "  :quantize <src> <dst> [fp16|bf16|int8|int4] - Exporta pacote quantizado compacto SMQ1"
-    );
-    let _ = writeln!(
-        out,
-        "  :help                    - Exibe esta mensagem de ajuda"
-    );
-    let _ = writeln!(
-        out,
-        "  :quit                    - Encerra o programa com segurança"
-    );
+    let mut current_section = "";
+    for (idx, spec) in REPL_COMMAND_SPECS.iter().enumerate() {
+        if spec.section != current_section {
+            current_section = spec.section;
+            if idx == 0 {
+                let _ = writeln!(out, "  --- {} ---", current_section);
+            } else {
+                let _ = writeln!(out, "\n  --- {} ---", current_section);
+            }
+        }
+        for &(syntax, desc) in spec.help_entries {
+            let _ = writeln!(out, "  {:<24} - {}", syntax, desc);
+        }
+    }
     let _ = writeln!(out, "\n  --- Avaliação Offline (CLI) ---");
     let _ = writeln!(
         out,
@@ -1903,5 +2081,46 @@ Erro em postgres://admin:SenhaSuperSecreta123@10.0.0.9:5432/prod\n\
         assert!(raw_http.contains("[SENHA_REDIGIDA]"));
         let saved_cfg = fs::read_to_string(temp.path.join("config.toml")).unwrap();
         assert!(!saved_cfg.contains("sk-ant-test-key-nao-persistida"));
+    }
+
+    #[test]
+    fn test_phase4_b13_command_enum_table_and_generated_help_consistency() {
+        let mut help_buf = Vec::new();
+        print_help(&mut help_buf);
+        let help_text = String::from_utf8_lossy(&help_buf);
+
+        // Todos os aliases de `REPL_COMMAND_SPECS` devem resolver para o seu `Command` correspondente,
+        // ser reconhecidos com `/` em `is_repl_command_input` e ter suas entradas presentes no `:help`.
+        for spec in REPL_COMMAND_SPECS {
+            assert!(!spec.aliases.is_empty());
+            assert!(!spec.help_entries.is_empty());
+            assert!(help_text.contains(spec.section));
+
+            for &alias in spec.aliases {
+                assert_eq!(Command::from_name(alias), Some(spec.command));
+                let slash_line = format!("/{} arg", alias);
+                assert!(is_repl_command_input(&slash_line));
+                let colon_line = format!(":{}   arg_extra  ", alias);
+                assert_eq!(
+                    Command::parse_line(&colon_line),
+                    Ok((spec.command, "arg_extra"))
+                );
+            }
+            for &(syntax, desc) in spec.help_entries {
+                assert!(
+                    help_text.contains(syntax) && help_text.contains(desc),
+                    "entrada '{}' ausente do help gerado: {}",
+                    syntax,
+                    help_text
+                );
+            }
+        }
+
+        // Comandos inexistentes retornam erro estruturado com prefixo preservado
+        assert_eq!(
+            Command::parse_line(":inexistente xyz"),
+            Err((":", "inexistente".to_string()))
+        );
+        assert!(!is_repl_command_input("/var/log/syslog"));
     }
 }

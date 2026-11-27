@@ -394,9 +394,10 @@ Consulte o guia completo e as regras do schema `1.0` em [`eval/README.md`](eval/
 
 ## Estrutura do projeto
 
-- `src/main.rs` e `src/lib.rs`: ponto de entrada enxuto (`ExitCode`), API interna da biblioteca e testes integrados offline.
+- `src/main.rs` e `src/lib.rs`: ponto de entrada enxuto (`ExitCode`), despacho tipado com `CliError`/`CliResult` e testes integrados offline.
+- `src/app/`: camada de casos de uso e orquestração (`corpus.rs`, `quantize.rs`, `marathon.rs`, `neural_service.rs`) desacoplada da interface CLI.
 - `src/chat/`: domínio conversacional — `agent.rs` (sessão e janela deslizante), `backend.rs` (`ModelBackend`: Ollama, Neural, Claude e presets OpenAI-compat gratuitos), `redaction.rs` (redação determinística de segredos de saída), `ollama.rs` (streaming NDJSON local), `config.rs` (configuração e anti-SSRF loopback), `guardrails.rs` (travas consultivas), `knowledge.rs` e `storage.rs` (SQLite transacional).
-- `src/cli/`: interface de linha de comando modularizada (`repl.rs`, `eval.rs`, `train.rs`, `marathon.rs`, `quantize.rs`, `hw.rs`).
+- `src/cli/`: interface de terminal e subcomandos baseados em `clap` e `rustyline` (`error.rs`, `repl.rs` com `enum Command`, `eval.rs`, `train.rs`, `quantize.rs`, `hw.rs`).
 - `src/eval/`: motor de avaliação offline reproduzível (`dataset.rs`, `metrics.rs`, `report.rs`, `runner.rs`, `neural_eval.rs`).
 - `src/neural/`: Transformer Decoder-only em Rust puro (`mod.rs`), kernels CPU `AVX2+FMA` (`ops.rs`), quantização `SMQ1` (`quant.rs`), backend GPU Vulkan Compute + SPIR-V 1.3 (`gpu.rs`, `spirv.rs`), `tokenizer.rs`, `training.rs`, `inference.rs` e `experience_store.rs`.
 - `src/platform/`: infraestrutura transversal (`hardware.rs` e `signals.rs`).
