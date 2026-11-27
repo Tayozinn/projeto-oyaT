@@ -77,10 +77,10 @@ São 17 itens, todos da Fase 1 (P0 e P1) ou de manutenção (P2). P0 = perde dad
 | A5 | `eval-neural` engole erro de dataset e de serialização | `cli.rs` | P1 | 30min | Dataset ausente sai com código 1 e mensagem clara | Concluído |
 | A6 | `load_seed_corpus` aceita linha sem `prompt` ou `response` | `cli.rs` | P1 | 1h | Erro com o número da linha, com teste | Concluído |
 | A7 | Maratona com `--resume` sem checkpoint treina do zero em silêncio | `cli.rs` | P1 | 1h | Falha com erro claro, como o modo normal | Concluído |
-| A8 | O spinner soma até 500 ms a cada resposta e disputa a tela com o primeiro trecho | `cli.rs` L60–82 | P1 | 2h | Spinner com canal e `recv_timeout`; join antes do primeiro print | Não iniciado |
-| A9 | Erro no meio do treino perde o progresso, e falha ao gravar métrica é fatal | `training/mod.rs` (loop) | P1 | 3h | Checkpoint de emergência; falha de métrica só avisa | Não iniciado |
-| A10 | Checkpoints não são gravados de forma atômica | `neural/mod.rs` (`save_checkpoint` / `save_quantized_checkpoint`) | P1 | 2h | Grava em `.tmp`, `sync_all` e `rename` | Já implementado no código (validar cobertura de teste na Fase 1) |
-| A11 | O guardrail é aplicado depois de o texto já ter sido impresso | `cli.rs` L84–103 | P1 | 1–2 dias | Decisão tomada: buffer antes de imprimir, ou aviso a posteriori declarado no banner | Não iniciado |
+| A8 | O spinner soma até 500 ms a cada resposta e disputa a tela com o primeiro trecho | `cli.rs` L60–82 | P1 | 2h | Spinner com canal e `recv_timeout`; join antes do primeiro print | Concluído |
+| A9 | Erro no meio do treino perde o progresso, e falha ao gravar métrica é fatal | `training/mod.rs` (loop) | P1 | 3h | Checkpoint de emergência; falha de métrica só avisa | Concluído |
+| A10 | Checkpoints não são gravados de forma atômica | `neural/mod.rs` (`save_checkpoint` / `save_quantized_checkpoint`) | P1 | 2h | Grava em `.tmp`, `sync_all` e `rename` com backoff anti-lock | Concluído |
+| A11 | O guardrail é aplicado depois de o texto já ter sido impresso | `cli.rs` | P1 | 1–2 dias | Buffer por parágrafo respeitando cercas ```` ``` ```` e sanitização prévia de credenciais | Concluído |
 | A12 | `--resume` sem `--steps` falha citando um `--steps` de 80 que você não digitou | `cli.rs` | P2 | 1h | Mensagem clara ou padrão calculado | Não iniciado |
 | A13 | O texto "em andamento" aparece como dispositivo no relatório | `cli.rs` | P2 | 15min | Status e dispositivo em parâmetros separados | Não iniciado |
 | A14 | `--with-kb` não consta do help do `eval` | `cli.rs` | P2 | 15min | Help atualizado e coberto por snapshot | Não iniciado |
@@ -234,7 +234,7 @@ Seis decisões ainda dependem de você, e sete marcos mostram quando cada fase e
 **Marcos.** Cada um só fecha quando o critério vale.
 
 - [x] Fase 0, Rede de segurança: repositório com tag `pre-refactor`, CI verde e snapshots de help.
-- [ ] Fase 1, Bugs críticos: A1 a A11 corrigidos, cada um com teste.
+- [x] Fase 1, Bugs críticos: A1 a A11 corrigidos, cada um com teste.
 - [ ] Fase 2, Organização: `lib.rs`, pastas por domínio e `cli` dividido, com todos os testes antigos passando.
 - [ ] Fase 3, Cérebro trocável: `ModelBackend` com Ollama e Claude, e baseline do `eval` registrado.
 - [ ] Fase 4, Consolidação: `cli` sem lógica de negócio, `CliError` e `clap` nos subcomandos.

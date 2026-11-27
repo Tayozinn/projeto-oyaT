@@ -11,7 +11,7 @@ use crate::eval_runner::{
 };
 use crate::models::{OllamaHealth, Role};
 use crate::ollama::{InstalledModelInfo, OllamaClient};
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -54,60 +54,36 @@ pub fn run_terminal_loop(session: &mut AgentSession) {
                     continue;
                 }
 
-                let waiting_first_token =
-                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-                let waiting_flag = std::sync::Arc::clone(&waiting_first_token);
-                let ticker = std::thread::spawn(move || {
-                    let start = std::time::Instant::now();
-                    while waiting_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                        let secs = start.elapsed().as_secs();
-                        print!("\r[SERVERMIND AI pensando... {}s]   ", secs);
-                        let _ = io::stdout().flush();
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                    }
-                });
-                let mut streamed_raw = String::new();
+                let mut spinner = SpinnerHandle::spawn(true);
+                let mut para_buf = ParagraphStreamBuffer::new(trimmed);
                 let mut started_output = false;
                 let stream_res = session.send_user_message_streaming(trimmed, |chunk| {
-                    if !started_output {
-                        waiting_first_token.store(false, std::sync::atomic::Ordering::Relaxed);
-                        print!("\r                                    \r\nSERVERMIND AI >\n");
-                        started_output = true;
+                    if let Some(ready_para) = para_buf.push_chunk(chunk) {
+                        if !started_output {
+                            spinner.stop_and_join();
+                            println!("\nSERVERMIND AI >");
+                            started_output = true;
+                        }
+                        print!("{}", ready_para);
+                        let _ = io::stdout().flush();
                     }
-                    print!("{}", chunk);
-                    let _ = io::stdout().flush();
-                    streamed_raw.push_str(chunk);
                 });
-                waiting_first_token.store(false, std::sync::atomic::Ordering::Relaxed);
-                let _ = ticker.join();
+                spinner.stop_and_join();
                 match stream_res {
                     Ok(guarded_reply) => {
-                        let raw_trimmed = streamed_raw.trim();
+                        let tail = para_buf.finish(&guarded_reply);
                         if !started_output {
-                            println!(
-                                "\r                                    \r\nSERVERMIND AI >\n{}",
-                                guarded_reply
-                            );
-                        } else if let Some(suffix) = guarded_reply.strip_prefix(raw_trimmed) {
-                            if !suffix.is_empty() {
-                                print!("{}", suffix);
+                            println!("\nSERVERMIND AI >\n{}", tail);
+                        } else if !tail.is_empty() {
+                            print!("{}", tail);
+                            if !tail.ends_with('\n') {
+                                println!();
                             }
-                            println!();
-                        } else if guarded_reply != raw_trimmed {
-                            println!(
-                                "\n\n[Resposta ajustada pelos guardrails de segurança]\n{}",
-                                guarded_reply
-                            );
-                        } else {
-                            println!();
                         }
                     }
                     Err(err) => {
                         if started_output {
                             println!();
-                        } else {
-                            print!("\r                                    \r");
-                            let _ = io::stdout().flush();
                         }
                         eprintln!("\n[ERRO AO PROCESSAR MENSAGEM]\n{}", err);
                     }
@@ -175,6 +151,165 @@ fn print_health_report(session: &AgentSession) {
         if let Some(msg) = health.error_message {
             eprintln!("{}", msg);
         }
+    }
+}
+
+/// Handle de spinner assíncrono controlado por canal (`A8`):
+/// - Só desenha em terminais interativos (`stdout().is_terminal()`);
+/// - Aguarda `200ms` antes do 1º frame (evitando *flicker* em respostas instantâneas);
+/// - Usa `recv_timeout` para acordar em `< 1ms` quando `stop_and_join` é chamado antes do 1º print!
+pub(crate) struct SpinnerHandle {
+    stop_tx: Option<std::sync::mpsc::Sender<()>>,
+    join_handle: Option<std::thread::JoinHandle<bool>>,
+}
+
+impl SpinnerHandle {
+    pub(crate) fn spawn(enabled: bool) -> Self {
+        if !enabled {
+            return Self {
+                stop_tx: None,
+                join_handle: None,
+            };
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let draw_to_tty = io::stdout().is_terminal();
+        let handle = std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            // Espera inicial curta: se o 1º parágrafo chegar rápido (< 200ms), nem desenha spinner
+            if rx
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_ok()
+                || !draw_to_tty
+            {
+                if !draw_to_tty {
+                    let _ = rx.recv();
+                }
+                return false;
+            }
+            loop {
+                let secs = start.elapsed().as_secs();
+                print!("\r[SERVERMIND AI pensando... {}s]   ", secs);
+                let _ = io::stdout().flush();
+                match rx.recv_timeout(std::time::Duration::from_millis(250)) {
+                    Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                }
+            }
+            true
+        });
+        Self {
+            stop_tx: Some(tx),
+            join_handle: Some(handle),
+        }
+    }
+
+    /// Sinaliza parada imediata pelo canal, faz `join` da thread antes de qualquer `print!` do chat
+    /// e limpa a linha do spinner caso algum frame tenha sido desenhado no TTY.
+    pub(crate) fn stop_and_join(&mut self) -> bool {
+        if let Some(tx) = self.stop_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(h) = self.join_handle.take() {
+            if let Ok(true) = h.join() {
+                print!("\r                                    \r");
+                let _ = io::stdout().flush();
+            }
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl Drop for SpinnerHandle {
+    fn drop(&mut self) {
+        let _ = self.stop_and_join();
+    }
+}
+
+fn find_safe_paragraph_cut(buf: &str) -> Option<usize> {
+    let mut in_fence = false;
+    let mut offset = 0usize;
+    for line in buf.split_inclusive('\n') {
+        let next_offset = offset + line.len();
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+        }
+        // Quando estamos fora de qualquer cerca ``` e encontramos uma linha em branco (fechamento de parágrafo)
+        if !in_fence && line.trim().is_empty() && line.ends_with('\n') && offset > 0 {
+            return Some(next_offset);
+        }
+        offset = next_offset;
+    }
+    None
+}
+
+/// Acumulador de streaming por parágrafo (`\n\n`) respeitando blocos ```` ``` ```` abertos (`A11`).
+pub(crate) struct ParagraphStreamBuffer {
+    user_prompt: String,
+    pending: String,
+    printed_so_far: String,
+}
+
+impl ParagraphStreamBuffer {
+    pub(crate) fn new(user_prompt: &str) -> Self {
+        Self {
+            user_prompt: user_prompt.to_string(),
+            pending: String::new(),
+            printed_so_far: String::new(),
+        }
+    }
+
+    pub(crate) fn push_chunk(&mut self, chunk: &str) -> Option<String> {
+        self.pending.push_str(chunk);
+        let mut emitted = String::new();
+        while let Some(cut) = find_safe_paragraph_cut(&self.pending) {
+            let raw_para: String = self.pending.drain(..cut).collect();
+            let mut sanitized =
+                crate::guardrails::sanitize_streaming_paragraph(&self.user_prompt, &raw_para);
+            if !sanitized.ends_with("\n\n") {
+                if sanitized.ends_with('\n') {
+                    sanitized.push('\n');
+                } else {
+                    sanitized.push_str("\n\n");
+                }
+            }
+            self.printed_so_far.push_str(&sanitized);
+            emitted.push_str(&sanitized);
+        }
+        if emitted.is_empty() {
+            None
+        } else {
+            Some(emitted)
+        }
+    }
+
+    pub(crate) fn finish(&mut self, final_guarded: &str) -> String {
+        if self.printed_so_far.is_empty() {
+            self.pending.clear();
+            return final_guarded.to_string();
+        }
+        let mut tail = String::new();
+        let rem = std::mem::take(&mut self.pending);
+        if !rem.trim().is_empty() {
+            let sanitized_rem =
+                crate::guardrails::sanitize_streaming_paragraph(&self.user_prompt, &rem);
+            self.printed_so_far.push_str(&sanitized_rem);
+            tail.push_str(&sanitized_rem);
+        }
+        let notices =
+            crate::guardrails::trailing_advisory_notices(final_guarded, &self.printed_so_far);
+        if !notices.is_empty() {
+            if !tail.is_empty() && !tail.ends_with('\n') {
+                tail.push_str("\n\n");
+            } else if (tail.ends_with('\n') && !tail.ends_with("\n\n"))
+                || (tail.is_empty() && !self.printed_so_far.ends_with("\n\n"))
+            {
+                tail.push('\n');
+            }
+            tail.push_str(&notices);
+        }
+        tail
     }
 }
 

@@ -2478,14 +2478,15 @@ fn make_atomic_temp_path(parent: &Path, target: &Path) -> std::path::PathBuf {
 }
 
 fn atomic_rename_with_retry(tmp_path: &Path, final_path: &Path) -> Result<(), String> {
+    const BACKOFF_MS: &[u64] = &[15, 30, 60, 120, 250, 400, 600];
     let mut last_err = None;
-    for attempt in 0..3 {
+    for attempt in 0..=BACKOFF_MS.len() {
         match fs::rename(tmp_path, final_path) {
             Ok(()) => return Ok(()),
             Err(e) => {
                 last_err = Some(e);
-                if attempt < 2 {
-                    std::thread::sleep(std::time::Duration::from_millis(15));
+                if let Some(&delay_ms) = BACKOFF_MS.get(attempt) {
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
                 }
             }
         }

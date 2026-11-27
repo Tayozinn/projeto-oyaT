@@ -99,6 +99,36 @@ const SECRET_PREFIXES: &[&str] = &[
     "pass=",
 ];
 
+/// Sanitiza um parágrafo ou bloco fechado durante o streaming antes de exibi-lo na tela (`A11`):
+/// remove caracteres CJK/Cirílicos vazados, oculta credenciais literais do prompt e insere
+/// o lembrete consultivo logo após blocos/linhas de comando mutável sem quebrar cercas ```` ``` ````.
+pub fn sanitize_streaming_paragraph(user_prompt: &str, paragraph: &str) -> String {
+    if paragraph.trim().is_empty() {
+        return paragraph.to_string();
+    }
+    let cleaned = strip_non_latin_script_leaks(paragraph);
+    let (redacted, _) = redact_prompt_secrets(user_prompt, &cleaned);
+    insert_mutating_caution_reminders(&redacted)
+}
+
+/// Calcula avisos de rodapé globais que ainda não tenham sido exibidos nos parágrafos transmitidos.
+pub fn trailing_advisory_notices(final_guarded: &str, already_printed: &str) -> String {
+    let mut notices = Vec::new();
+    for marker in [
+        "> **Aviso de segurança:** Credenciais expostas foram ocultadas.",
+        "> **Aviso de segurança:** Nunca utilize `debug=True`",
+        "> **Aviso de segurança:** Não execute remoção recursiva",
+    ] {
+        if let Some(pos) = final_guarded.find(marker) {
+            let line = final_guarded[pos..].lines().next().unwrap_or("").trim_end();
+            if !line.is_empty() && !already_printed.contains(line) {
+                notices.push(line.to_string());
+            }
+        }
+    }
+    notices.join("\n\n")
+}
+
 /// Aplica guardrails determinísticos sobre a resposta gerada pelo modelo assistente.
 pub fn apply_advisory_guardrails(user_prompt: &str, response: &str) -> String {
     if response.trim().is_empty() {

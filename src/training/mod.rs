@@ -633,282 +633,336 @@ impl Trainer {
             }
         });
 
+        let initial_step = self.current_step;
+        let mut metric_write_warned = false;
         let mut stopped_by_duration = false;
         let mut cancelled = false;
         let mut last_eval_wall = Instant::now();
         let mut last_ckpt_wall = Instant::now();
 
-        loop {
-            if session_opts.max_duration.is_none() && self.current_step >= self.config.max_steps {
-                break;
-            }
-            if let Some(max_dur) = session_opts.max_duration {
-                if start_all.elapsed() >= max_dur && self.current_step > 0 {
-                    stopped_by_duration = true;
+        let loop_res: Result<(), String> = (|| {
+            loop {
+                if session_opts.max_duration.is_none() && self.current_step >= self.config.max_steps
+                {
                     break;
                 }
-                if self.current_step >= self.config.max_steps {
+                if let Some(max_dur) = session_opts.max_duration {
+                    if start_all.elapsed() >= max_dur && self.current_step > 0 {
+                        stopped_by_duration = true;
+                        break;
+                    }
+                    if self.current_step >= self.config.max_steps {
+                        break;
+                    }
+                }
+                if is_cancelled(&session_opts.cancel_flag, &ctrlc_guard) {
+                    cancelled = true;
                     break;
                 }
-            }
-            if is_cancelled(&session_opts.cancel_flag, &ctrlc_guard) {
-                cancelled = true;
-                break;
-            }
 
-            let step_start = Instant::now();
-            if let Some(ref mut gpu) = gpu_session {
-                gpu.zero_grads()?;
-            } else if let Some(ref mut g) = grads {
-                g.zero_out();
-            }
-
-            let mut step_loss_sum = 0.0f32;
-            let mut step_tokens = 0usize;
-
-            for _ in 0..batch_size {
-                if epoch_pos >= order.len() {
-                    epoch += 1;
-                    epoch_pos = 0;
-                    order = shuffled_indices(train_len, 0x5EED_2026_u64 ^ (epoch as u64));
+                let step_start = Instant::now();
+                if let Some(ref mut gpu) = gpu_session {
+                    gpu.zero_grads()?;
+                } else if let Some(ref mut g) = grads {
+                    g.zero_out();
                 }
-                let idx = order[epoch_pos];
-                epoch_pos += 1;
-                let (inputs, targets): (&[usize], &[usize]) =
-                    if let Some(m_train) = session_opts.masked_train {
-                        let item = &m_train[idx];
-                        if item.inputs.is_empty() {
-                            continue;
-                        }
-                        (&item.inputs, &item.targets)
+
+                let mut step_loss_sum = 0.0f32;
+                let mut step_tokens = 0usize;
+
+                for _ in 0..batch_size {
+                    if epoch_pos >= order.len() {
+                        epoch += 1;
+                        epoch_pos = 0;
+                        order = shuffled_indices(train_len, 0x5EED_2026_u64 ^ (epoch as u64));
+                    }
+                    let idx = order[epoch_pos];
+                    epoch_pos += 1;
+                    let (inputs, targets): (&[usize], &[usize]) =
+                        if let Some(m_train) = session_opts.masked_train {
+                            let item = &m_train[idx];
+                            if item.inputs.is_empty() {
+                                continue;
+                            }
+                            (&item.inputs, &item.targets)
+                        } else {
+                            let win = &train_windows[idx];
+                            if win.len() < 2 {
+                                continue;
+                            }
+                            (&win[..win.len() - 1], &win[1..])
+                        };
+                    let (loss_sum, count) = if let Some(ref mut gpu) = gpu_session {
+                        gpu.forward_and_backward_sample(inputs, targets, pad_id)?
                     } else {
-                        let win = &train_windows[idx];
-                        if win.len() < 2 {
-                            continue;
-                        }
-                        (&win[..win.len() - 1], &win[1..])
+                        self.model.forward_and_backward_with_workspace(
+                            inputs,
+                            targets,
+                            pad_id,
+                            grads.as_mut().expect("CPU grads"),
+                            workspace.as_mut().expect("CPU workspace"),
+                        )
                     };
-                let (loss_sum, count) = if let Some(ref mut gpu) = gpu_session {
-                    gpu.forward_and_backward_sample(inputs, targets, pad_id)?
+                    step_loss_sum += loss_sum;
+                    step_tokens += count;
+                }
+
+                if !step_loss_sum.is_finite() {
+                    return Err(format!(
+                        "Divergência numérica detectada no passo {}: loss não-finita ({}). Pesos preservados.",
+                        self.current_step + 1,
+                        step_loss_sum
+                    ));
+                }
+
+                let lr = if let Some(max_dur) = session_opts.max_duration {
+                    cosine_lr_temporal(
+                        start_all.elapsed(),
+                        max_dur,
+                        self.config.learning_rate,
+                        self.config.min_learning_rate,
+                    )
                 } else {
-                    self.model.forward_and_backward_with_workspace(
-                        inputs,
-                        targets,
-                        pad_id,
-                        grads.as_mut().expect("CPU grads"),
-                        workspace.as_mut().expect("CPU workspace"),
+                    cosine_lr(
+                        self.current_step,
+                        self.config.warmup_steps,
+                        self.config.max_steps,
+                        self.config.learning_rate,
+                        self.config.min_learning_rate,
                     )
                 };
-                step_loss_sum += loss_sum;
-                step_tokens += count;
-            }
 
-            if !step_loss_sum.is_finite() {
-                return Err(format!(
-                    "Divergência numérica detectada no passo {}: loss não-finita ({}). Pesos preservados.",
-                    self.current_step + 1,
-                    step_loss_sum
-                ));
-            }
-
-            let lr = if let Some(max_dur) = session_opts.max_duration {
-                cosine_lr_temporal(
-                    start_all.elapsed(),
-                    max_dur,
-                    self.config.learning_rate,
-                    self.config.min_learning_rate,
-                )
-            } else {
-                cosine_lr(
-                    self.current_step,
-                    self.config.warmup_steps,
-                    self.config.max_steps,
-                    self.config.learning_rate,
-                    self.config.min_learning_rate,
-                )
-            };
-
-            let (train_loss, grad_norm) = if step_tokens > 0 {
-                if let Some(ref mut gpu) = gpu_session {
-                    match gpu.step_adamw(
-                        &mut self.optimizer.step,
-                        step_tokens,
-                        lr,
-                        self.config.weight_decay,
-                        self.config.max_grad_norm,
-                    )? {
-                        Some(gn) => {
-                            host_synced = false;
-                            (step_loss_sum / step_tokens as f32, gn)
+                let (train_loss, grad_norm) = if step_tokens > 0 {
+                    if let Some(ref mut gpu) = gpu_session {
+                        match gpu.step_adamw(
+                            &mut self.optimizer.step,
+                            step_tokens,
+                            lr,
+                            self.config.weight_decay,
+                            self.config.max_grad_norm,
+                        )? {
+                            Some(gn) => {
+                                host_synced = false;
+                                (step_loss_sum / step_tokens as f32, gn)
+                            }
+                            None => {
+                                return Err(format!(
+                                    "Divergência numérica detectada no passo {}: gradiente não-finito (NaN/Inf). Pesos preservados.",
+                                    self.current_step + 1
+                                ));
+                            }
                         }
-                        None => {
+                    } else {
+                        let g = grads.as_mut().expect("CPU grads");
+                        g.scale(1.0 / step_tokens as f32);
+                        let gn = g.l2_norm();
+                        if !self.optimizer.step(
+                            &mut self.model,
+                            g,
+                            lr,
+                            self.config.weight_decay,
+                            self.config.max_grad_norm,
+                        ) {
                             return Err(format!(
                                 "Divergência numérica detectada no passo {}: gradiente não-finito (NaN/Inf). Pesos preservados.",
                                 self.current_step + 1
                             ));
                         }
+                        (step_loss_sum / step_tokens as f32, gn)
                     }
                 } else {
-                    let g = grads.as_mut().expect("CPU grads");
-                    g.scale(1.0 / step_tokens as f32);
-                    let gn = g.l2_norm();
-                    if !self.optimizer.step(
-                        &mut self.model,
-                        g,
-                        lr,
-                        self.config.weight_decay,
-                        self.config.max_grad_norm,
-                    ) {
-                        return Err(format!(
-                            "Divergência numérica detectada no passo {}: gradiente não-finito (NaN/Inf). Pesos preservados.",
-                            self.current_step + 1
-                        ));
-                    }
-                    (step_loss_sum / step_tokens as f32, gn)
-                }
-            } else {
-                (0.0, 0.0)
-            };
-
-            if initial_train_loss.is_none() {
-                initial_train_loss = Some(train_loss);
-            }
-            final_train_loss = train_loss;
-
-            self.current_step += 1;
-            self.total_tokens += step_tokens;
-
-            let time_eval_due = session_opts
-                .eval_every_secs
-                .map(|s| s > 0 && last_eval_wall.elapsed().as_secs() >= s)
-                .unwrap_or(false);
-            let step_eval_due = self.config.eval_interval > 0
-                && (self.current_step % self.config.eval_interval == 0
-                    || (session_opts.max_duration.is_none()
-                        && self.current_step == self.config.max_steps));
-            let dur_just_reached = session_opts
-                .max_duration
-                .map(|d| start_all.elapsed() >= d)
-                .unwrap_or(false);
-            let ctrlc_now = is_cancelled(&session_opts.cancel_flag, &ctrlc_guard);
-
-            let should_eval = time_eval_due
-                || step_eval_due
-                || ((dur_just_reached || ctrlc_now) && self.config.eval_interval > 0);
-
-            let has_val = masked_eval_subset
-                .as_ref()
-                .map(|m| !m.is_empty())
-                .unwrap_or(!eval_subset.is_empty());
-
-            let val_loss = if should_eval && has_val {
-                last_eval_wall = Instant::now();
-                let eval_opt = if let Some(ref m_sub) = masked_eval_subset {
-                    if let Some(ref mut gpu) = gpu_session {
-                        gpu.evaluate_masked_loss(m_sub, pad_id)?
-                    } else {
-                        evaluate_masked_loss(&self.model, m_sub, pad_id)
-                    }
-                } else if let Some(ref mut gpu) = gpu_session {
-                    gpu.evaluate_loss(&eval_subset, pad_id)?
-                } else {
-                    evaluate_loss(&self.model, &eval_subset, pad_id)
+                    (0.0, 0.0)
                 };
-                match eval_opt {
-                    Some(v) if v.is_finite() => {
-                        if v < self.best_val_loss {
-                            self.best_val_loss = v;
-                            if let Some(ref mut gpu) = gpu_session {
-                                if !host_synced {
-                                    gpu.sync_to_host(&mut self.model, &mut self.optimizer)?;
-                                    host_synced = true;
-                                }
-                            }
-                            save_checkpoint(
-                                &best_path,
-                                &self.model,
-                                Some(&self.optimizer),
-                                self.current_step,
-                                self.best_val_loss,
-                            )?;
+
+                if initial_train_loss.is_none() {
+                    initial_train_loss = Some(train_loss);
+                }
+                final_train_loss = train_loss;
+
+                self.current_step += 1;
+                self.total_tokens += step_tokens;
+
+                let time_eval_due = session_opts
+                    .eval_every_secs
+                    .map(|s| s > 0 && last_eval_wall.elapsed().as_secs() >= s)
+                    .unwrap_or(false);
+                let step_eval_due = self.config.eval_interval > 0
+                    && (self.current_step % self.config.eval_interval == 0
+                        || (session_opts.max_duration.is_none()
+                            && self.current_step == self.config.max_steps));
+                let dur_just_reached = session_opts
+                    .max_duration
+                    .map(|d| start_all.elapsed() >= d)
+                    .unwrap_or(false);
+                let ctrlc_now = is_cancelled(&session_opts.cancel_flag, &ctrlc_guard);
+
+                let should_eval = time_eval_due
+                    || step_eval_due
+                    || ((dur_just_reached || ctrlc_now) && self.config.eval_interval > 0);
+
+                let has_val = masked_eval_subset
+                    .as_ref()
+                    .map(|m| !m.is_empty())
+                    .unwrap_or(!eval_subset.is_empty());
+
+                let val_loss = if should_eval && has_val {
+                    last_eval_wall = Instant::now();
+                    let eval_opt = if let Some(ref m_sub) = masked_eval_subset {
+                        if let Some(ref mut gpu) = gpu_session {
+                            gpu.evaluate_masked_loss(m_sub, pad_id)?
+                        } else {
+                            evaluate_masked_loss(&self.model, m_sub, pad_id)
                         }
-                        Some(v)
+                    } else if let Some(ref mut gpu) = gpu_session {
+                        gpu.evaluate_loss(&eval_subset, pad_id)?
+                    } else {
+                        evaluate_loss(&self.model, &eval_subset, pad_id)
+                    };
+                    match eval_opt {
+                        Some(v) if v.is_finite() => {
+                            if v < self.best_val_loss {
+                                self.best_val_loss = v;
+                                if let Some(ref mut gpu) = gpu_session {
+                                    if !host_synced {
+                                        gpu.sync_to_host(&mut self.model, &mut self.optimizer)?;
+                                        host_synced = true;
+                                    }
+                                }
+                                save_checkpoint(
+                                    &best_path,
+                                    &self.model,
+                                    Some(&self.optimizer),
+                                    self.current_step,
+                                    self.best_val_loss,
+                                )?;
+                            }
+                            Some(v)
+                        }
+                        Some(non_finite) => {
+                            eprintln!(
+                                "[AVISO DE VALIDAÇÃO] step={}: val_loss não finita ({}) ignorada; best.bin preservado em {:.4}.",
+                                self.current_step, non_finite, self.best_val_loss
+                            );
+                            None
+                        }
+                        None => None,
                     }
-                    Some(non_finite) => {
-                        eprintln!(
-                            "[AVISO DE VALIDAÇÃO] step={}: val_loss não finita ({}) ignorada; best.bin preservado em {:.4}.",
-                            self.current_step, non_finite, self.best_val_loss
-                        );
-                        None
-                    }
-                    None => None,
-                }
-            } else {
-                None
-            };
+                } else {
+                    None
+                };
 
-            let wall_ckpt_due = session_opts.max_duration.is_some()
-                && last_ckpt_wall.elapsed().as_secs() >= MAX_CHECKPOINT_WALL_SECS;
-            let step_ckpt_due = self.config.checkpoint_interval > 0
-                && (self.current_step % self.config.checkpoint_interval == 0
-                    || (session_opts.max_duration.is_none()
-                        && self.current_step == self.config.max_steps));
+                let wall_ckpt_due = session_opts.max_duration.is_some()
+                    && last_ckpt_wall.elapsed().as_secs() >= MAX_CHECKPOINT_WALL_SECS;
+                let step_ckpt_due = self.config.checkpoint_interval > 0
+                    && (self.current_step % self.config.checkpoint_interval == 0
+                        || (session_opts.max_duration.is_none()
+                            && self.current_step == self.config.max_steps));
 
-            if step_ckpt_due || wall_ckpt_due || dur_just_reached || ctrlc_now {
-                last_ckpt_wall = Instant::now();
-                if let Some(ref mut gpu) = gpu_session {
-                    if !host_synced {
-                        gpu.sync_to_host(&mut self.model, &mut self.optimizer)?;
-                        host_synced = true;
-                    }
-                }
-                save_checkpoint(
-                    &latest_path,
-                    &self.model,
-                    Some(&self.optimizer),
-                    self.current_step,
-                    self.best_val_loss,
-                )?;
-            }
-
-            let step_metric = TrainStepMetrics {
-                step: self.current_step,
-                train_loss,
-                val_loss,
-                grad_norm,
-                learning_rate: lr,
-                tokens_processed: step_tokens,
-                elapsed_ms: step_start.elapsed().as_millis(),
-            };
-            append_metric_jsonl(&metrics_path, &step_metric)?;
-            if should_eval {
-                let secs_so_far = start_all.elapsed().as_secs_f64().max(1e-6);
-                let tok_per_sec = self.total_tokens as f64 / secs_so_far;
-                if let Some(cb) = on_progress.as_deref_mut() {
-                    cb(&step_metric, tok_per_sec);
-                }
-                if let Some(m_cb) = session_opts.on_milestone.as_deref_mut() {
+                if step_ckpt_due || wall_ckpt_due || dur_just_reached || ctrlc_now {
+                    last_ckpt_wall = Instant::now();
                     if let Some(ref mut gpu) = gpu_session {
                         if !host_synced {
                             gpu.sync_to_host(&mut self.model, &mut self.optimizer)?;
                             host_synced = true;
                         }
                     }
-                    m_cb(&self.model, &step_metric, tok_per_sec, start_all.elapsed());
+                    save_checkpoint(
+                        &latest_path,
+                        &self.model,
+                        Some(&self.optimizer),
+                        self.current_step,
+                        self.best_val_loss,
+                    )?;
+                }
+
+                let step_metric = TrainStepMetrics {
+                    step: self.current_step,
+                    train_loss,
+                    val_loss,
+                    grad_norm,
+                    learning_rate: lr,
+                    tokens_processed: step_tokens,
+                    elapsed_ms: step_start.elapsed().as_millis(),
+                };
+                if let Err(m_err) = append_metric_jsonl(&metrics_path, &step_metric) {
+                    if !metric_write_warned {
+                        eprintln!(
+                            "[AVISO DE MÉTRICAS] Falha não-fatal ao gravar '{}' (avisos seguintes suprimidos): {}",
+                            metrics_path.display(),
+                            m_err
+                        );
+                        metric_write_warned = true;
+                    }
+                }
+                if should_eval {
+                    let secs_so_far = start_all.elapsed().as_secs_f64().max(1e-6);
+                    let tok_per_sec = self.total_tokens as f64 / secs_so_far;
+                    if let Some(cb) = on_progress.as_deref_mut() {
+                        cb(&step_metric, tok_per_sec);
+                    }
+                    if let Some(m_cb) = session_opts.on_milestone.as_deref_mut() {
+                        if let Some(ref mut gpu) = gpu_session {
+                            if !host_synced {
+                                gpu.sync_to_host(&mut self.model, &mut self.optimizer)?;
+                                host_synced = true;
+                            }
+                        }
+                        m_cb(&self.model, &step_metric, tok_per_sec, start_all.elapsed());
+                    }
+                }
+                if history.len() < MAX_IN_MEMORY_HISTORY || should_eval {
+                    history.push(step_metric);
+                }
+
+                if dur_just_reached {
+                    stopped_by_duration = true;
+                    break;
+                }
+                if ctrlc_now {
+                    cancelled = true;
+                    break;
                 }
             }
-            if history.len() < MAX_IN_MEMORY_HISTORY || should_eval {
-                history.push(step_metric);
-            }
+            Ok(())
+        })();
 
-            if dur_just_reached {
-                stopped_by_duration = true;
-                break;
+        if let Err(err_msg) = loop_res {
+            if self.current_step > initial_step {
+                let is_numeric_div = err_msg.contains("Divergência numérica");
+                if !is_numeric_div {
+                    if let Some(ref mut gpu) = gpu_session {
+                        if !host_synced
+                            && gpu
+                                .sync_to_host(&mut self.model, &mut self.optimizer)
+                                .is_ok()
+                        {
+                            host_synced = true;
+                        }
+                    }
+                }
+                if host_synced && model_weights_all_finite(&self.model) {
+                    let emerg_path = self.config.checkpoint_dir.join("emergency_latest.bin");
+                    match save_checkpoint(
+                        &emerg_path,
+                        &self.model,
+                        Some(&self.optimizer),
+                        self.current_step,
+                        self.best_val_loss,
+                    ) {
+                        Ok(()) => eprintln!(
+                            "[CHECKPOINT DE EMERGÊNCIA] Progresso até step={} preservado em '{}'.",
+                            self.current_step,
+                            emerg_path.display()
+                        ),
+                        Err(em_err) => eprintln!(
+                            "[AVISO] Não foi possível salvar checkpoint de emergência em '{}': {}",
+                            emerg_path.display(),
+                            em_err
+                        ),
+                    }
+                }
             }
-            if ctrlc_now {
-                cancelled = true;
-                break;
-            }
+            return Err(err_msg);
         }
 
         if let Some(ref mut gpu) = gpu_session {
@@ -982,6 +1036,25 @@ pub fn select_eval_windows(val_windows: &[Vec<usize>], max_val_windows: usize) -
         out.push(val_windows[pos].clone());
     }
     out
+}
+
+fn model_weights_all_finite(m: &ServerMindTransformer) -> bool {
+    m.token_emb.iter().all(|v| v.is_finite())
+        && m.pos_emb.iter().all(|v| v.is_finite())
+        && m.ln_f_gamma.iter().all(|v| v.is_finite())
+        && m.lm_head.iter().all(|v| v.is_finite())
+        && m.blocks.iter().all(|b| {
+            b.ln1_gamma.iter().all(|v| v.is_finite())
+                && b.wq.iter().all(|v| v.is_finite())
+                && b.wk.iter().all(|v| v.is_finite())
+                && b.wv.iter().all(|v| v.is_finite())
+                && b.wo.iter().all(|v| v.is_finite())
+                && b.ln2_gamma.iter().all(|v| v.is_finite())
+                && b.w1.iter().all(|v| v.is_finite())
+                && b.b1.iter().all(|v| v.is_finite())
+                && b.w2.iter().all(|v| v.is_finite())
+                && b.b2.iter().all(|v| v.is_finite())
+        })
 }
 
 fn append_metric_jsonl(path: &Path, metric: &TrainStepMetrics) -> Result<(), String> {
@@ -1641,6 +1714,114 @@ mod tests {
         trainer.model.lm_head[0] = f32::NAN;
         let nan_eval = evaluate_loss(&trainer.model, &[vec![1usize, 2, 3]], 0);
         assert!(matches!(nan_eval, Some(v) if v.is_nan()));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn phase1_a9_metric_write_failure_only_warns_and_mid_run_error_saves_emergency_checkpoint() {
+        let cfg = TransformerConfig {
+            vocab_size: 16,
+            max_seq_len: 8,
+            d_model: 16,
+            n_heads: 2,
+            n_layers: 1,
+            d_ff: 32,
+        };
+        let model = ServerMindTransformer::new_random(cfg.clone(), 303).unwrap();
+        let dir = temp_dir("a9_resilience");
+        fs::create_dir_all(&dir).unwrap();
+
+        // 1. Retomada onde `metrics.jsonl` virou um DIRETÓRIO (simulando falha permanente de I/O na métrica):
+        //    o treinamento NÃO pode abortar por falha ao gravar linha de métrica!
+        let init_dir = dir.join("ckpt_metric_io");
+        let tcfg = TrainingConfig {
+            run_name: "a9-metric-warn".to_string(),
+            checkpoint_dir: init_dir.clone(),
+            max_steps: 2,
+            batch_size: 1,
+            seq_len: 8,
+            learning_rate: 1e-3,
+            min_learning_rate: 1e-4,
+            warmup_steps: 1,
+            weight_decay: 0.0,
+            max_grad_norm: 1.0,
+            eval_interval: 0,
+            checkpoint_interval: 2,
+            max_val_windows: 4,
+            device: ComputeDevice::Cpu,
+        };
+        let wins = vec![vec![1usize, 2, 3, 4, 5]];
+        let mut tr1 = Trainer::new(model, tcfg.clone());
+        tr1.train(&wins, &[], 0).unwrap();
+
+        // Remove `metrics.jsonl` e cria um DIRETÓRIO com o mesmo nome para forçar falha em `OpenOptions::open`!
+        fs::remove_file(init_dir.join("metrics.jsonl")).unwrap();
+        fs::create_dir_all(init_dir.join("metrics.jsonl")).unwrap();
+
+        let mut resumed_cfg = tcfg;
+        resumed_cfg.max_steps = 4;
+        let mut tr_resumed =
+            Trainer::resume_from_checkpoint(&init_dir.join("latest.bin"), resumed_cfg).unwrap();
+        let rep = tr_resumed
+            .train(&wins, &[], 0)
+            .expect("falha ao gravar metrics.jsonl deve apenas avisar, nunca abortar o treino!");
+        assert_eq!(rep.steps_completed, 4);
+
+        // 2. Erro fatal no meio do treino após avançar steps com pesos finitos deve salvar `emergency_latest.bin`!
+        let emerg_dir = dir.join("ckpt_emerg");
+        let emerg_model = ServerMindTransformer::new_random(cfg, 404).unwrap();
+        let emerg_cfg = TrainingConfig {
+            run_name: "a9-emerg".to_string(),
+            checkpoint_dir: emerg_dir.clone(),
+            max_steps: 4,
+            batch_size: 1,
+            seq_len: 8,
+            learning_rate: 1e-3,
+            min_learning_rate: 1e-4,
+            warmup_steps: 1,
+            weight_decay: 0.0,
+            max_grad_norm: 1.0,
+            eval_interval: 0,
+            checkpoint_interval: 2,
+            max_val_windows: 4,
+            device: ComputeDevice::Cpu,
+        };
+        let mut tr_emerg = Trainer::new(emerg_model, emerg_cfg);
+        // Bloqueia `latest.bin` criando um DIRETÓRIO com o nome `latest.bin` ANTES do step 2 tentar salvar,
+        // mas como `current_step == 0` checa `latest_path.exists()`, usamos `resume_from_checkpoint`:
+        let seed_dir = dir.join("seed_emerg");
+        let mut seed_cfg = tr_emerg.config.clone();
+        seed_cfg.checkpoint_dir = seed_dir.clone();
+        seed_cfg.max_steps = 1;
+        seed_cfg.checkpoint_interval = 1;
+        tr_emerg.config = seed_cfg.clone();
+        tr_emerg.train(&wins, &[], 0).unwrap();
+
+        fs::create_dir_all(&emerg_dir).unwrap();
+        fs::copy(seed_dir.join("latest.bin"), emerg_dir.join("seed.bin")).unwrap();
+        // No `emerg_dir`, cria um diretório chamado `latest.bin` para que no step 2 o save normal falhe,
+        // acionando o salvamento automático em `emergency_latest.bin`!
+        fs::create_dir_all(emerg_dir.join("latest.bin")).unwrap();
+
+        let mut fail_cfg = seed_cfg;
+        fail_cfg.checkpoint_dir = emerg_dir.clone();
+        fail_cfg.max_steps = 2;
+        fail_cfg.checkpoint_interval = 2;
+        let mut tr_fail =
+            Trainer::resume_from_checkpoint(&emerg_dir.join("seed.bin"), fail_cfg).unwrap();
+        let err_res = tr_fail.train(&wins, &[], 0);
+        assert!(
+            err_res.is_err(),
+            "save em diretório bloqueado deveria falhar"
+        );
+        assert!(
+            emerg_dir.join("emergency_latest.bin").is_file(),
+            "deveria ter salvo emergency_latest.bin com o progresso do step 2!"
+        );
+        let (_, _, em_meta) =
+            crate::neural::load_checkpoint(&emerg_dir.join("emergency_latest.bin")).unwrap();
+        assert_eq!(em_meta.step, 2);
 
         let _ = fs::remove_dir_all(&dir);
     }

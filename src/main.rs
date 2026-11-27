@@ -2018,4 +2018,99 @@ mod tests {
             "não deveria ter iniciado treino do zero!"
         );
     }
+
+    #[test]
+    fn test_phase1_a8_a10_a11_spinner_atomic_checkpoint_and_paragraph_buffer() {
+        // 1. A8: Spinner com canal encerra em < 60ms ao chamar `stop_and_join()` (sem esperar sleep de 500ms!)
+        let mut spinner = crate::cli::SpinnerHandle::spawn(true);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let t0 = std::time::Instant::now();
+        assert!(spinner.stop_and_join());
+        let join_ms = t0.elapsed().as_millis();
+        assert!(
+            join_ms < 80,
+            "spinner demorou {}ms para dar join (esperado < 80ms via canal mpsc)",
+            join_ms
+        );
+        assert!(
+            !spinner.stop_and_join(),
+            "segundo join deve ser no-op seguro"
+        );
+
+        // 2. A10: Escrita atômica de `best.bin` e `quantized.smq` nunca deixa `.tmp.*` órfão e preserva anterior em falha
+        let temp = TempDirGuard::new("a10_atomic_ckpt");
+        let cfg = crate::neural::TransformerConfig {
+            vocab_size: 24,
+            max_seq_len: 8,
+            d_model: 16,
+            n_heads: 2,
+            n_layers: 1,
+            d_ff: 32,
+        };
+        let model = crate::neural::ServerMindTransformer::new_random(cfg, 55).unwrap();
+        let best_p = temp.path.join("best.bin");
+        crate::neural::save_checkpoint(&best_p, &model, None, 3, 2.25).unwrap();
+        crate::neural::save_checkpoint(&best_p, &model, None, 4, 1.95).unwrap();
+
+        let qm =
+            crate::neural::quantize_model_in_memory(&model, crate::neural::WeightPrecision::Int8)
+                .unwrap();
+        let smq_p = temp.path.join("quantized.smq");
+        crate::neural::save_quantized_checkpoint(&smq_p, &qm, 4, 1.95).unwrap();
+
+        let leftover_tmps: Vec<_> = fs::read_dir(&temp.path)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(
+            leftover_tmps.is_empty(),
+            "arquivos .tmp órfãos encontrados: {:?}",
+            leftover_tmps
+        );
+
+        // 3. A11: Buffer por parágrafo segura até `\n\n`, respeita cercas ``` abertas e oculta segredos ANTES de imprimir!
+        let prompt = "Rode mysql -u root -pSegredoReal999 -e 'SELECT 1'";
+        let mut pbuf = crate::cli::ParagraphStreamBuffer::new(prompt);
+
+        // Parágrafo 1 ainda sem `\n\n`: segura no buffer
+        assert_eq!(
+            pbuf.push_chunk("Use `mysql -u root -pSegredoReal999`"),
+            None
+        );
+        // Fecha o parágrafo 1 com `\n\n`: libera já com a senha ocultada ANTES de chegar à tela!
+        let p1 = pbuf
+            .push_chunk(" em modo leitura.\n\n")
+            .expect("deveria liberar o 1º parágrafo ao receber \\n\\n");
+        assert!(
+            !p1.contains("SegredoReal999"),
+            "vazou segredo no streaming: {}",
+            p1
+        );
+        assert!(p1.contains("<SENHA_OCULTADA>"));
+
+        // Parágrafo 2 abre bloco ```bash com `\n\n` interno: NÃO pode cortar antes do ``` de fechamento!
+        assert_eq!(
+            pbuf.push_chunk("```bash\nsudo systemctl restart nginx\n\necho ok\n"),
+            None,
+            "não pode cortar bloco de código com cerca ``` aberta!"
+        );
+        let p2 = pbuf
+            .push_chunk("```\n\n")
+            .expect("deve liberar o bloco assim que fechar ``` + \\n\\n");
+        assert!(p2.contains("```bash") && p2.contains("echo ok\n```"));
+        assert!(
+            p2.contains("Revisão manual e backup recomendados"),
+            "bloco mutável fechado deve vir acompanhado do lembrete fora da cerca: {}",
+            p2
+        );
+
+        // Último trecho sem `\n\n` fica retido no buffer até `finish()`, que entrega ele + avisos finais sem duplicar!
+        assert_eq!(pbuf.push_chunk("Fim."), None);
+        let raw_full = "Use `mysql -u root -pSegredoReal999` em modo leitura.\n\n```bash\nsudo systemctl restart nginx\n\necho ok\n```\n\nFim.";
+        let guarded_full = crate::guardrails::apply_advisory_guardrails(prompt, raw_full);
+        let tail = pbuf.finish(&guarded_full);
+        assert!(tail.contains("Fim."));
+        assert!(tail.contains("Rotacione a senha/token"));
+    }
 }
