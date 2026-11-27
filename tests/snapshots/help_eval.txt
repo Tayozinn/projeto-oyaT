@@ -22,6 +22,7 @@ Opções de `eval run`:
   --repeat <N>             Repetições por caso (1..=20; padrão: 1)
   --judge-model <MODEL>    Juiz LLM local opcional (sempre marcado como estimativa)
   --ollama-url <URL>       URL local de loopback do Ollama (127.0.0.1/localhost/[::1])
+  --with-kb                Enriquece cada caso com notas relevantes da base de conhecimento local
 
 Garantias:
   - Nunca lê nem escreve `servermind.db` e nunca inclui `system_prompt` privado nos relatórios.

@@ -267,19 +267,53 @@ pub fn pack_sequences(
     pack_sequences_internal(tokenizer, texts, eff_seq, None)
 }
 
-/// Empacota janelas de validação sem sobreposição (`stride = seq_len`) para avaliação imparcial
-/// (evitando dupla contagem de tokens centrais e duplicação de cauda).
+/// Empacota janelas de validação sem sobreposição (`stride = seq_len`) para avaliação imparcial:
+/// quando a cauda final é menor que `seq_len + 1`, preenche o sufixo com `pad_id` em vez de
+/// recuar sobre tokens já avaliados, garantindo que cada transição alvo seja contada 1 única vez (`A16`).
 pub fn pack_eval_sequences(
     tokenizer: &BpeTokenizer,
     texts: &[String],
     seq_len: usize,
 ) -> Vec<Vec<usize>> {
     let eff_seq = seq_len.max(8);
-    pack_sequences_with_stride(tokenizer, texts, eff_seq, eff_seq)
+    let pad_id = tokenizer.pad_id();
+    let mut stream = Vec::new();
+    for text in texts {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let ids = tokenizer.encode(trimmed, true, true);
+        if ids.len() >= 2 {
+            stream.extend_from_slice(&ids);
+        }
+    }
+
+    let window_len = eff_seq + 1;
+    let mut windows = Vec::new();
+    if stream.len() < 2 {
+        return windows;
+    }
+
+    let mut start = 0usize;
+    while start + window_len <= stream.len() {
+        windows.push(stream[start..start + window_len].to_vec());
+        start += eff_seq;
+    }
+
+    if start + 1 < stream.len() {
+        let mut tail = stream[start..].to_vec();
+        while tail.len() < window_len {
+            tail.push(pad_id);
+        }
+        windows.push(tail);
+    }
+    windows
 }
 
 /// Empacota textos tokenizados em janelas de `seq_len.max(8) + 1` usando passo explícito `stride`,
 /// sem jamais duplicar a última janela quando divisível pelo stride.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn pack_sequences_with_stride(
     tokenizer: &BpeTokenizer,
     texts: &[String],
@@ -566,14 +600,33 @@ impl Trainer {
             }
             ComputeDevice::Auto => {
                 if self.model.config.total_params() >= GPU_AUTO_MIN_PARAMS {
-                    if let Ok(dev) = VulkanDevice::global() {
-                        if dev.info.is_discrete_gpu {
-                            VulkanTrainingSession::new(dev, &self.model, &self.optimizer).ok()
-                        } else {
+                    match VulkanDevice::global() {
+                        Ok(dev) if dev.info.is_discrete_gpu => {
+                            match VulkanTrainingSession::new(dev, &self.model, &self.optimizer) {
+                                Ok(sess) => Some(sess),
+                                Err(e) => {
+                                    eprintln!(
+                                        "[AVISO DE HARDWARE] Fallback automático GPU -> CPU: falha ao alocar sessão Vulkan ({}).",
+                                        e
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        Ok(dev) => {
+                            eprintln!(
+                                "[AVISO DE HARDWARE] Fallback automático GPU -> CPU: dispositivo '{}' não é GPU dedicada.",
+                                dev.info.device_name
+                            );
                             None
                         }
-                    } else {
-                        None
+                        Err(e) => {
+                            eprintln!(
+                                "[AVISO DE HARDWARE] Fallback automático GPU -> CPU: Vulkan indisponível ({}).",
+                                e
+                            );
+                            None
+                        }
                     }
                 } else {
                     None
@@ -1824,5 +1877,33 @@ mod tests {
         assert_eq!(em_meta.step, 2);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn phase1_a16_pack_eval_sequences_counts_each_tail_token_exactly_once() {
+        let corpus =
+            ["alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu".to_string()];
+        let refs = [corpus[0].as_str()];
+        let tok = BpeTokenizer::train_from_corpus(&refs, 280);
+        let pad_id = tok.pad_id();
+        let full_ids = tok.encode(&corpus[0], true, true);
+        assert!(full_ids.len() > 10 && !((full_ids.len() - 1) % 8 == 0));
+
+        let eval_wins = pack_eval_sequences(&tok, &corpus, 8);
+        assert!(eval_wins.len() >= 2);
+
+        // Total de alvos reais (`!= pad_id`) somados nas janelas de avaliação DEVE ser igual
+        // ao total exato de transições do stream (`full_ids.len() - 1`), sem contar a cauda 2x!
+        let counted_targets: usize = eval_wins
+            .iter()
+            .map(|w| w[1..].iter().filter(|&&t| t != pad_id).count())
+            .sum();
+        assert_eq!(
+            counted_targets,
+            full_ids.len() - 1,
+            "pack_eval_sequences contou {} tokens alvo em vez de {} (duplicação de cauda!)",
+            counted_targets,
+            full_ids.len() - 1
+        );
     }
 }

@@ -1083,6 +1083,10 @@ fn print_eval_help<W: Write>(out: &mut W) {
         out,
         "  --ollama-url <URL>       URL local de loopback do Ollama (127.0.0.1/localhost/[::1])"
     );
+    let _ = writeln!(
+        out,
+        "  --with-kb                Enriquece cada caso com notas relevantes da base de conhecimento local"
+    );
     let _ = writeln!(out, "\nGarantias:");
     let _ = writeln!(
         out,
@@ -2035,10 +2039,21 @@ fn handle_train_command(arg: &str) {
 
 fn handle_exp_command(arg: &str) {
     let db_path = std::path::Path::new("servermind_experiences.db");
+    let mut out = io::stdout();
+    let mut err = io::stderr();
+    handle_exp_command_with_io(arg, db_path, &mut out, &mut err);
+}
+
+pub(crate) fn handle_exp_command_with_io(
+    arg: &str,
+    db_path: &std::path::Path,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) {
     let store = match crate::experience::ExperienceStore::open(db_path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Erro ao abrir ExperienceStore: {}", e);
+            let _ = writeln!(err, "Erro ao abrir ExperienceStore: {}", e);
             return;
         }
     };
@@ -2047,7 +2062,8 @@ fn handle_exp_command(arg: &str) {
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("stats") {
         match store.stats() {
             Ok(st) => {
-                println!(
+                let _ = writeln!(
+                    out,
                     "Memória 3 Camadas ('{}'): operacional={}, experiências={} (verificadas={}), treino_aprovado={}, treino_rejeitado={}",
                     db_path.display(),
                     st.operational_count,
@@ -2056,9 +2072,11 @@ fn handle_exp_command(arg: &str) {
                     st.approved_training_count,
                     st.rejected_training_count
                 );
-                println!("Uso: :exp op <scope>|<key>|<value>  |  :exp add <dominio>|<problema>|<diagnostico>|<solucao>|<outcome>|<verified:true|false>  |  :exp export [arquivo.jsonl]");
+                let _ = writeln!(out, "Uso: :exp op <scope>|<key>|<value>  |  :exp add <dominio>|<problema>|<diagnostico>|<solucao>|<outcome>  |  :exp approve <id>  |  :exp export [arquivo.jsonl]");
             }
-            Err(e) => eprintln!("Erro ao consultar estatísticas: {}", e),
+            Err(e) => {
+                let _ = writeln!(err, "Erro ao consultar estatísticas: {}", e);
+            }
         }
         return;
     }
@@ -2071,24 +2089,33 @@ fn handle_exp_command(arg: &str) {
         "op" => {
             let cols: Vec<&str> = rest.split('|').map(|s| s.trim()).collect();
             if cols.len() != 3 {
-                eprintln!("Uso: :exp op <scope> | <key> | <value>");
+                let _ = writeln!(err, "Uso: :exp op <scope> | <key> | <value>");
                 return;
             }
             match store.upsert_operational(cols[0], cols[1], cols[2]) {
-                Ok(()) => println!("Memória operacional atualizada ({}:{}).", cols[0], cols[1]),
-                Err(e) => eprintln!("Erro ao gravar memória operacional: {}", e),
+                Ok(()) => {
+                    let _ = writeln!(
+                        out,
+                        "Memória operacional atualizada ({}:{}).",
+                        cols[0], cols[1]
+                    );
+                }
+                Err(e) => {
+                    let _ = writeln!(err, "Erro ao gravar memória operacional: {}", e);
+                }
             }
         }
         "add" => {
             let cols: Vec<&str> = rest.split('|').map(|s| s.trim()).collect();
-            if cols.len() < 6 {
-                eprintln!("Uso: :exp add <dominio> | <problema> | <diagnostico> | <solucao> | <outcome> | <true|false>");
+            if cols.len() < 5 {
+                let _ = writeln!(
+                    err,
+                    "Uso: :exp add <dominio> | <problema> | <diagnostico> | <solucao> | <outcome>"
+                );
                 return;
             }
-            let verified = matches!(
-                cols[5].to_ascii_lowercase().as_str(),
-                "true" | "1" | "sim" | "yes"
-            );
+            // A17: `:exp add` registra sempre como pendente de revisão (`verified = false`),
+            // exigindo `:exp approve <id>` em uma etapa separada antes de entrar no dataset de treino!
             let exp_id = match store.record_experience(&crate::experience::NewExperience {
                 domain: cols[0].to_string(),
                 problem: cols[1].to_string(),
@@ -2096,38 +2123,45 @@ fn handle_exp_command(arg: &str) {
                 solution: cols[3].to_string(),
                 outcome: cols[4].to_string(),
                 error_notes: String::new(),
-                verified,
+                verified: false,
             }) {
                 Ok(id) => id,
                 Err(e) => {
-                    eprintln!("Erro ao registrar experiência: {}", e);
+                    let _ = writeln!(err, "Erro ao registrar experiência: {}", e);
                     return;
                 }
             };
-            let ideal = format!("Diagnóstico: {}. Solução: {}", cols[2], cols[3]);
-            match store.submit_for_training(
-                Some(exp_id),
-                cols[1],
-                &ideal,
-                cols[0],
-                cols[4],
-                verified,
-                "exp_v1",
-            ) {
+            let _ = writeln!(
+                out,
+                "Experiência #{} registrada na Camada 2 (pendente de revisão). Revise com `:exp list` e aprove para treinamento com `:exp approve {}`.",
+                exp_id, exp_id
+            );
+        }
+        "approve" | "aprovar" => {
+            let cleaned = rest.trim_start_matches('#').trim();
+            let Ok(exp_id) = cleaned.parse::<i64>() else {
+                let _ = writeln!(err, "Uso: :exp approve <id_da_experiencia>");
+                return;
+            };
+            match store.approve_experience_for_training(exp_id, "exp_v1") {
                 Ok(rec) if rec.approved => {
-                    println!(
-                        "Experiência #{} registrada e APROVADA para treinamento (score={:.2}).",
+                    let _ = writeln!(
+                        out,
+                        "Experiência #{} revisada, verificada e APROVADA para treinamento (score={:.2}).",
                         exp_id, rec.quality_score
                     );
                 }
                 Ok(rec) => {
-                    println!(
-                        "Experiência #{} registrada, mas REPROVADA no gate de treinamento: {}",
+                    let _ = writeln!(
+                        out,
+                        "Experiência #{} revisada, mas REPROVADA no gate de qualidade: {}",
                         exp_id,
                         rec.rejection_reason.unwrap_or_default()
                     );
                 }
-                Err(e) => eprintln!("Erro ao validar exemplo de treinamento: {}", e),
+                Err(e) => {
+                    let _ = writeln!(err, "Erro ao aprovar experiência #{}: {}", exp_id, e);
+                }
             }
         }
         "export" => {
@@ -2140,25 +2174,31 @@ fn handle_exp_command(arg: &str) {
                 let _ = std::fs::create_dir_all(parent);
             }
             match store.export_approved_jsonl(out_path, None) {
-                Ok(n) => println!(
-                    "Exportados {} exemplo(s) aprovado(s) para '{}'.",
-                    n,
-                    out_path.display()
-                ),
-                Err(e) => eprintln!("Erro ao exportar experiências: {}", e),
+                Ok(n) => {
+                    let _ = writeln!(
+                        out,
+                        "Exportados {} exemplo(s) aprovado(s) para '{}'.",
+                        n,
+                        out_path.display()
+                    );
+                }
+                Err(e) => {
+                    let _ = writeln!(err, "Erro ao exportar experiências: {}", e);
+                }
             }
         }
         "list" => {
             if let Ok(ops) = store.list_operational(None) {
-                println!("Memória Operacional ({}):", ops.len());
+                let _ = writeln!(out, "Memória Operacional ({}):", ops.len());
                 for op in ops.iter().take(10) {
-                    println!("  [{}] {} = {}", op.scope, op.key, op.value);
+                    let _ = writeln!(out, "  [{}] {} = {}", op.scope, op.key, op.value);
                 }
             }
             if let Ok(exps) = store.list_experiences(10) {
-                println!("Últimas Experiências ({}):", exps.len());
+                let _ = writeln!(out, "Últimas Experiências ({}):", exps.len());
                 for e in &exps {
-                    println!(
+                    let _ = writeln!(
+                        out,
                         "  #{} [{} | verified={} | {}] {}",
                         e.id, e.domain, e.verified, e.outcome, e.problem
                     );
@@ -2166,8 +2206,9 @@ fn handle_exp_command(arg: &str) {
             }
         }
         _ => {
-            eprintln!(
-                "Subcomando :exp desconhecido '{}'. Use :exp stats | list | op | add | export.",
+            let _ = writeln!(
+                err,
+                "Subcomando :exp desconhecido '{}'. Use :exp stats | list | op | add | approve | export.",
                 sub
             );
         }
@@ -2808,20 +2849,30 @@ pub fn run_train_neural_cli_with_cancel(
             );
             return 1;
         }
-        if max_duration_opt.is_none() && max_steps <= resumed.current_step {
-            let _ = writeln!(
-                err,
-                "'--steps' ({}) deve ser maior que o passo atual do checkpoint ({}).",
-                max_steps, resumed.current_step
-            );
-            return 2;
+        if max_duration_opt.is_none() {
+            if let Some(explicit_steps) = max_steps_opt {
+                if explicit_steps <= resumed.current_step {
+                    let _ = writeln!(
+                        err,
+                        "'--steps' ({}) deve ser maior que o passo atual do checkpoint ({}).",
+                        explicit_steps, resumed.current_step
+                    );
+                    return 2;
+                }
+                resumed.config.max_steps = explicit_steps;
+            } else {
+                resumed.config.max_steps = resumed.current_step.saturating_add(80);
+            }
         }
         resumed.config.seq_len = resumed.model.config.max_seq_len;
         if max_duration_opt.is_some() {
             resumed.config.eval_interval = 500;
             resumed.config.checkpoint_interval = 1_000;
         } else {
-            let remaining = max_steps.saturating_sub(resumed.current_step);
+            let remaining = resumed
+                .config
+                .max_steps
+                .saturating_sub(resumed.current_step);
             resumed.config.eval_interval = (remaining / 5).max(5);
             resumed.config.checkpoint_interval = (remaining / 2).max(10);
         }
@@ -2926,10 +2977,11 @@ pub fn run_train_neural_cli_with_cancel(
         .unwrap_or(val_windows.len());
     let total_params = trainer.model.config.total_params();
 
+    let target_steps = trainer.config.max_steps;
     let target_desc = if let Some(dur) = max_duration_opt {
         format!("duração={}", format_hms(dur))
     } else {
-        format!("step={} -> {}", trainer.current_step, max_steps)
+        format!("step={} -> {}", trainer.current_step, target_steps)
     };
     let _ = writeln!(
         out,
@@ -2950,6 +3002,7 @@ pub fn run_train_neural_cli_with_cancel(
         let mut rec = EvolutionSequenceRecorder::new(
             &out_dir,
             &resolved_run_name,
+            device.as_str(),
             total_params,
             max_duration_opt,
         );
@@ -2974,7 +3027,6 @@ pub fn run_train_neural_cli_with_cancel(
     let auto_eval_secs =
         eval_every_secs_opt.or_else(|| max_duration_opt.map(|d| (d.as_secs() / 24).clamp(2, 900)));
 
-    let target_steps = max_steps;
     let run_res = if let Some(ref mut rec) = recorder {
         let tok_ref = &tokenizer;
         let mut milestone_cb = |model: &crate::neural::ServerMindTransformer,
@@ -3045,7 +3097,12 @@ pub fn run_train_neural_cli_with_cancel(
     match run_res {
         Ok(report) => {
             if let Some(ref rec) = recorder {
-                let _ = rec.write_markdown_summary(&report.active_device, report.cancelled);
+                let final_status = if report.cancelled {
+                    "Pausado pelo usuário (Ctrl+C, salvo)"
+                } else {
+                    "Concluído"
+                };
+                let _ = rec.write_markdown_summary(&report.active_device, final_status);
                 let _ = writeln!(
                     out,
                     "Sequência evolutiva completa salva em '{}' e '{}'",
@@ -3140,6 +3197,7 @@ struct EvolutionMilestoneEntry {
 
 struct EvolutionSequenceRecorder {
     run_name: String,
+    device_hint: String,
     total_params: usize,
     planned_duration: Option<Duration>,
     pub md_path: PathBuf,
@@ -3151,6 +3209,7 @@ impl EvolutionSequenceRecorder {
     fn new(
         out_dir: &std::path::Path,
         run_name: &str,
+        device_hint: &str,
         total_params: usize,
         planned_duration: Option<Duration>,
     ) -> Self {
@@ -3159,6 +3218,7 @@ impl EvolutionSequenceRecorder {
         let jsonl_path = out_dir.join("evolution_log.jsonl");
         Self {
             run_name: run_name.to_string(),
+            device_hint: device_hint.to_string(),
             total_params,
             planned_duration,
             md_path,
@@ -3343,10 +3403,14 @@ impl EvolutionSequenceRecorder {
         let _ = out.flush();
 
         self.entries.push(entry);
-        let _ = self.write_markdown_summary("em andamento", false);
+        let _ = self.write_markdown_summary(&self.device_hint, "Em andamento");
     }
 
-    fn write_markdown_summary(&self, active_device: &str, cancelled: bool) -> Result<(), String> {
+    fn write_markdown_summary(
+        &self,
+        active_device: &str,
+        status_label: &str,
+    ) -> Result<(), String> {
         let mut md = String::new();
         md.push_str(&format!(
             "# Sequência Evolutiva de Treinamento — `{}`\n\n",
@@ -3357,11 +3421,7 @@ impl EvolutionSequenceRecorder {
             self.total_params,
             self.total_params as f64 / 1e6,
             active_device,
-            if cancelled {
-                "Pausado pelo usuário (Ctrl+C, salvo)"
-            } else {
-                "Ativo / Concluído"
-            }
+            status_label
         ));
         if let Some(d) = self.planned_duration {
             md.push_str(&format!("- **Duração Alvo:** `{}`\n", format_hms(d)));
@@ -3718,6 +3778,7 @@ fn run_autonomous_marathon(
     let mut recorder = EvolutionSequenceRecorder::new(
         &params.out_dir,
         &run_name,
+        params.device.as_str(),
         total_params,
         Some(params.total_duration),
     );
@@ -3901,7 +3962,12 @@ fn run_autonomous_marathon(
         }
     }
 
-    let _ = recorder.write_markdown_summary(&active_device_str, was_cancelled);
+    let final_status = if was_cancelled {
+        "Pausado pelo usuário (Ctrl+C, salvo)"
+    } else {
+        "Concluído"
+    };
+    let _ = recorder.write_markdown_summary(&active_device_str, final_status);
 
     match export_quantized_package(&params.out_dir, &params.quant_out_dir, params.export_bits) {
         Ok(st) => {

@@ -2113,4 +2113,114 @@ mod tests {
         assert!(tail.contains("Fim."));
         assert!(tail.contains("Rotacione a senha/token"));
     }
+
+    #[test]
+    fn test_phase1_a12_a13_a14_a17_polish_regressions() {
+        // 1. A14: `eval --help` deve documentar explicitamente `--with-kb`!
+        let (code_h, out_h, _) = run_cli_capture(&["servermind-ai", "eval", "--help"], None);
+        assert_eq!(code_h, Some(0));
+        assert!(
+            out_h.contains("--with-kb"),
+            "A14: `--with-kb` ausente do `eval --help`!"
+        );
+
+        // 2. A12 + A13: treina até step 90 (acima do default 80) com `--eval-every-secs 1`,
+        //    verifica que `training_evolution.md` nunca grava `Dispositivo: `em andamento`` (A13)
+        //    e depois retoma com `--resume` SEM passar `--steps` avançando normalmente (A12)!
+        let temp = TempDirGuard::new("a12_a13_a17_polish");
+        let ds_path = temp.path.join("qa.jsonl");
+        let ckpt_dir = temp.path.join("ckpt");
+        fs::write(
+            &ds_path,
+            "{\"prompt\":\"Como ver portas abertas no Linux?\",\"response\":\"Execute ss -tulnp para listar portas.\"}\n",
+        )
+        .unwrap();
+
+        let (c1, _, e1) = run_cli_capture(
+            &[
+                "servermind-ai",
+                "train-neural",
+                "--dataset",
+                &ds_path.to_string_lossy(),
+                "--out",
+                &ckpt_dir.to_string_lossy(),
+                "--steps",
+                "85",
+                "--eval-every-secs",
+                "1",
+                "--device",
+                "cpu",
+                "--d-model",
+                "16",
+                "--layers",
+                "1",
+                "--heads",
+                "2",
+                "--ff",
+                "32",
+                "--seq-len",
+                "24",
+            ],
+            None,
+        );
+        assert_eq!(c1, Some(0), "stderr={}", e1);
+        let evo_md = fs::read_to_string(ckpt_dir.join("training_evolution.md")).unwrap();
+        assert!(
+            !evo_md.contains("**Dispositivo:** `em andamento`"),
+            "A13: `em andamento` apareceu como dispositivo no relatório:\n{}",
+            evo_md
+        );
+
+        // A12: `--resume` SEM `--steps` num checkpoint em step=85 (> 80) deve somar +80 passos (até 165) e suceder!
+        let (c2, out2, e2) = run_cli_capture(
+            &[
+                "servermind-ai",
+                "train-neural",
+                "--dataset",
+                &ds_path.to_string_lossy(),
+                "--out",
+                &ckpt_dir.to_string_lossy(),
+                "--resume",
+                "--device",
+                "cpu",
+            ],
+            None,
+        );
+        assert_eq!(
+            c2,
+            Some(0),
+            "A12: `--resume` sem `--steps` falhou indevidamente: stderr={} | stdout={}",
+            e2,
+            out2
+        );
+
+        // 3. A17: `:exp add` registra sem aprovar automaticamente para treino; somente `:exp approve <id>` aprova!
+        let exp_db = temp.path.join("exp_test.db");
+        let mut exp_out = Vec::new();
+        let mut exp_err = Vec::new();
+        crate::cli::handle_exp_command_with_io(
+            "add linux | Uso alto de CPU no servidor web | Processo worker em loop infinito | Ajustar timeout e reiniciar unidade systemd com cautela | resolved | true",
+            &exp_db,
+            &mut exp_out,
+            &mut exp_err,
+        );
+        let store = crate::experience::ExperienceStore::open(&exp_db).unwrap();
+        let st_before = store.stats().unwrap();
+        assert_eq!(st_before.experience_count, 1);
+        assert_eq!(
+            st_before.approved_training_count, 0,
+            "A17: `:exp add` não pode aprovar para treino sem revisão separada!"
+        );
+
+        exp_out.clear();
+        exp_err.clear();
+        crate::cli::handle_exp_command_with_io("approve 1", &exp_db, &mut exp_out, &mut exp_err);
+        let st_after = store.stats().unwrap();
+        assert_eq!(
+            st_after.approved_training_count,
+            1,
+            "A17: `:exp approve 1` deveria revisar e aprovar a experiência #1! stderr={}",
+            String::from_utf8_lossy(&exp_err)
+        );
+    }
 }

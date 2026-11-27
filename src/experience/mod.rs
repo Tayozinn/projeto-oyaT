@@ -235,6 +235,78 @@ impl ExperienceStore {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Revisa e aprova explicitamente uma experiência existente na Camada 2 (`experience_log`),
+    /// marcando `verified = 1` e submetendo-a ao gate da Camada 3 (`training_examples`) (`A17`).
+    pub fn approve_experience_for_training(
+        &self,
+        exp_id: i64,
+        dataset_version: &str,
+    ) -> Result<TrainingExampleRecord, String> {
+        let exp: ExperienceRecord = self
+            .conn
+            .query_row(
+                "SELECT id, domain, problem, diagnosis, solution, outcome, error_notes, verified, created_at
+                 FROM experience_log WHERE id = ?1",
+                params![exp_id],
+                |r| {
+                    Ok(ExperienceRecord {
+                        id: r.get(0)?,
+                        domain: r.get(1)?,
+                        problem: r.get(2)?,
+                        diagnosis: r.get(3)?,
+                        solution: r.get(4)?,
+                        outcome: r.get(5)?,
+                        error_notes: r.get(6)?,
+                        verified: r.get::<_, i64>(7)? != 0,
+                        created_at: r.get(8)?,
+                    })
+                },
+            )
+            .map_err(|_| format!("Experiência #{} não encontrada em `experience_log`.", exp_id))?;
+
+        let existing_approved: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM training_examples WHERE experience_id = ?1 AND approved = 1",
+                params![exp_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if existing_approved > 0 {
+            return Err(format!(
+                "A experiência #{} já foi revisada e aprovada anteriormente para treinamento.",
+                exp_id
+            ));
+        }
+
+        self.conn
+            .execute(
+                "UPDATE experience_log SET verified = 1 WHERE id = ?1",
+                params![exp_id],
+            )
+            .map_err(|e| {
+                format!(
+                    "Falha ao marcar experiência #{} como verificada: {}",
+                    exp_id, e
+                )
+            })?;
+
+        let ideal = if exp.diagnosis.trim().is_empty() {
+            exp.solution.clone()
+        } else {
+            format!("Diagnóstico: {}. Solução: {}", exp.diagnosis, exp.solution)
+        };
+        self.submit_for_training(
+            Some(exp.id),
+            &exp.problem,
+            &ideal,
+            &exp.domain,
+            &exp.outcome,
+            true,
+            dataset_version,
+        )
+    }
+
     pub fn list_experiences(&self, limit: usize) -> Result<Vec<ExperienceRecord>, String> {
         let mut stmt = self
             .conn
